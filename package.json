@@ -1,0 +1,28 @@
+{
+  "name": "photobooth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Video wall and photo printing for AI content sent by an n8n workflow",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "print": "node print/agent.js",
+    "set-password": "node server/set-password.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.9",
+    "ag-psd": "^31.0.2",
+    "dotenv": "^17.2.0",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "nodemailer": "^10.0.13",
+    "pdf-lib": "^1.17.1",
+    "pdf-to-printer": "^5.8.1",
+    "sharp": "^0.35.5",
+    "ws": "^8.22.0"
+  }
+}

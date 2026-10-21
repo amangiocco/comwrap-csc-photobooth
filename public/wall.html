@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photobooth · wall</title>
+  <style>
+    :root { --columns: 6; }
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+    body.pointer { cursor: default; }
+    /* scrolls vertically to the older videos; the scrollbar shows only while the mouse moves */
+    #scroller {
+      position: fixed; inset: 0; overflow-x: hidden; overflow-y: auto; container-type: inline-size;
+      scrollbar-width: none; /* no space taken: margins stay equal on every side */
+    }
+    body.pointer #scroller { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .45) transparent; }
+    /* rows as tall as the columns are wide, so the cards stay square at any size; the grid may be
+       taller than the window and scrolls, it is never squeezed into it */
+    #grid {
+      --gap: .25cqw; /* keep in sync with GAP in wall.js */
+      --card: calc((100cqw - var(--gap) * (var(--columns) + 1)) / var(--columns));
+      display: grid; grid-template-columns: repeat(var(--columns), var(--card)); grid-auto-rows: var(--card);
+      gap: var(--gap); padding: var(--gap); align-content: start; box-sizing: border-box;
+    }
+    .card { position: relative; overflow: hidden; background: #111; border-radius: .3vw; }
+    .card.new { animation: appear .8s ease; }
+    @keyframes appear { from { opacity: 0; transform: scale(.92); } }
+    .card video, .media video, .card img.cover { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* 16:9 iframe centred and cropped to fill the square */
+    .card iframe, .media iframe {
+      position: absolute; top: 0; left: 50%; height: 100%; width: 177.78%;
+      transform: translateX(-50%); border: 0; pointer-events: none;
+    }
+
+    /* showcase of a video just arrived */
+    @property --angle { syntax: '<angle>'; inherits: true; initial-value: 0deg; }
+    #showcase {
+      --ring: conic-gradient(from var(--angle), #ff2d95, #ffb800, #3dffd0, #4d7cff, #b14dff, #ff2d95);
+      position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 4vh; pointer-events: none;
+      background: radial-gradient(circle at center, rgba(0, 0, 0, .45), rgba(0, 0, 0, .92));
+      backdrop-filter: blur(8px); opacity: 0; visibility: hidden;
+      transition: opacity .7s ease, visibility 0s .7s;
+      animation: spin 4s linear infinite;
+    }
+    #showcase.show { opacity: 1; visibility: visible; transition: opacity .7s ease; }
+    #showcase.leaving { background: transparent; backdrop-filter: none; transition: background 1s ease, backdrop-filter 1s ease; }
+    @keyframes spin { to { --angle: 360deg; } }
+    #showcase .title {
+      color: #fff; font: 700 clamp(28px, 6vh, 80px)/1.1 system-ui, sans-serif; text-align: center;
+      padding: 0 4vw; text-shadow: 0 0 2vh rgba(255, 255, 255, .55), 0 0 6vh rgba(177, 77, 255, .8);
+    }
+    #showcase.show .title { animation: rise .9s cubic-bezier(.2, 1.3, .4, 1) .3s both; }
+    #showcase.leaving .title { opacity: 0; transition: opacity .4s; }
+    @keyframes rise { from { opacity: 0; transform: translateY(3vh) scale(.9); } }
+    #showcase .frame {
+      position: relative; width: min(68vh, 80vw); aspect-ratio: 1; transform-origin: top left;
+    }
+    #showcase.show .frame { animation: pop .9s cubic-bezier(.2, 1.4, .4, 1) both; }
+    @keyframes pop { from { opacity: 0; scale: .4; } }
+    /* blurred halo and sharp ring, both made of the rotating gradient */
+    #showcase .glow, #showcase .ring { position: absolute; border-radius: 2.2vh; background: var(--ring); }
+    #showcase .glow { inset: -1.5vh; filter: blur(4vh); opacity: .9; animation: breathe 2.4s ease-in-out infinite; }
+    #showcase .ring { inset: -.9vh; }
+    @keyframes breathe { 50% { opacity: .5; transform: scale(1.04); } }
+    #showcase.leaving .glow, #showcase.leaving .ring { opacity: 0; transition: opacity .6s; }
+    #showcase .media { position: absolute; inset: 0; border-radius: 1.4vh; overflow: hidden; background: #000; }
+    #message {
+      position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+      color: #888; font: 16px system-ui, sans-serif; opacity: 0; transition: opacity .3s;
+    }
+    #message.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="scroller"><div id="grid"></div></div>
+  <div id="showcase" aria-live="polite">
+    <div class="title"></div>
+    <div class="frame"><div class="glow"></div><div class="ring"></div><div class="media"></div></div>
+  </div>
+  <div id="message"></div>
+  <script src="/static/live.js"></script>
+  <script src="/static/wall.js"></script>
+</body>
+</html>
