@@ -15,10 +15,23 @@ import { hashPassword } from './auth.js';
 import { parseTrustProxy } from './https.js';
 import { setEnvValue } from './env-file.js';
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+/* const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ENV_FILE = path.join(ROOT, '.env'); */
+
+// Calcola la cartella corrente (server/) e sale alla root del progetto (comwrap-csc-photobooth)
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..');
 const ENV_FILE = path.join(ROOT, '.env');
 
-dotenv.config({ path: ENV_FILE, quiet: true });
+// Debug per verificare dove sta cercando il file .env
+console.log("Percorso calcolato della root:", ROOT);
+console.log("Percorso cercato per .env:", ENV_FILE);
+
+dotenv.config({ path: ENV_FILE });
+
+console.log("ADMIN USER: ", process.env.ADMIN_PASSWORD_HASH)
+
+//dotenv.config({ path: ENV_FILE, quiet: true });
 
 /** Generates PHOTOBOOTH_API_KEY, appends it to .env and returns it. */
 function ensureApiKey() {
@@ -63,6 +76,7 @@ function lanAddresses() {
 const { key, created } = ensureApiKey();
 const admin = ensureAdminPassword();
 const adminUser = (process.env.ADMIN_USER || '').trim() || 'admin';
+
 // «::» listens on IPv6 and IPv4 together: «localhost» (IPv6 first on Windows) answers at once
 const host = process.env.HOST || '::';
 const requestedPort = Number(process.env.PORT) || 0;
