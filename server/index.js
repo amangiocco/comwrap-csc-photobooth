@@ -22,7 +22,7 @@ const ENV_FILE = path.path ? ... // oppure semplicemente:
 const pathEnv = path.join(ROOT, '.env');
 
 //dotenv.config({ path: ENV_FILE, quiet: true });
-dotenv.config({ path: ENV_FILE });
+dotenv.config({ path: pathEnv });
 
 /** Generates PHOTOBOOTH_API_KEY, appends it to .env and returns it. */
 function ensureApiKey() {
