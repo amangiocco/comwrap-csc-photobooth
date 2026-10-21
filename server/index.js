@@ -60,6 +60,9 @@ function lanAddresses() {
 const { key, created } = ensureApiKey();
 const admin = ensureAdminPassword();
 const adminUser = (process.env.ADMIN_USER || '').trim() || 'admin';
+
+console.log("ADMIN USER: ", process.env.ADMIN_USER)
+
 // «::» listens on IPv6 and IPv4 together: «localhost» (IPv6 first on Windows) answers at once
 const host = process.env.HOST || '::';
 const requestedPort = Number(process.env.PORT) || 0;
