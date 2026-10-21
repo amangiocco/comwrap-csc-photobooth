@@ -15,14 +15,18 @@ import { setEnvValue } from './env-file.js';
 /* const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ENV_FILE = path.join(ROOT, '.env'); */
 
+// Calcola la cartella corrente (server/) e sale alla root del progetto (comwrap-csc-photobooth)
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Se questo file è dentro 'server/', la root del progetto è un livello sopra:
 const ROOT = path.resolve(__dirname, '..');
-const ENV_FILE = path.path ? ... // oppure semplicemente:
-const pathEnv = path.join(ROOT, '.env');
+const ENV_FILE = path.join(ROOT, '.env');
+
+// Debug per verificare dove sta cercando il file .env
+console.log("Percorso calcolato della root:", ROOT);
+console.log("Percorso cercato per .env:", ENV_FILE);
+
+dotenv.config({ path: ENV_FILE });
 
 //dotenv.config({ path: ENV_FILE, quiet: true });
-dotenv.config({ path: pathEnv });
 
 /** Generates PHOTOBOOTH_API_KEY, appends it to .env and returns it. */
 function ensureApiKey() {
