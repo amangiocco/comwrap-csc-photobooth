@@ -12,10 +12,17 @@ import { attachLive, createApp } from './app.js';
 import { hashPassword } from './auth.js';
 import { setEnvValue } from './env-file.js';
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const ENV_FILE = path.join(ROOT, '.env');
+/* const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ENV_FILE = path.join(ROOT, '.env'); */
 
-dotenv.config({ path: ENV_FILE, quiet: true });
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Se questo file è dentro 'server/', la root del progetto è un livello sopra:
+const ROOT = path.resolve(__dirname, '..');
+const ENV_FILE = path.path ? ... // oppure semplicemente:
+const pathEnv = path.join(ROOT, '.env');
+
+//dotenv.config({ path: ENV_FILE, quiet: true });
+dotenv.config({ path: ENV_FILE });
 
 /** Generates PHOTOBOOTH_API_KEY, appends it to .env and returns it. */
 function ensureApiKey() {
