@@ -10,9 +10,11 @@ import { ADMIN_HASH, adminCookie } from './helpers/admin.js';
 
 const KEY = 'chiave-n8n';
 
-async function setup(t) {
+async function setup(t, options = {}) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'photobooth-auth-'));
-  const { app, hub, logger } = createApp({ dataDir, apiKey: KEY, adminPasswordHash: ADMIN_HASH });
+  const { app, hub, logger } = createApp({
+    dataDir, apiKey: KEY, adminPasswordHash: ADMIN_HASH, ...options,
+  });
   const server = http.createServer(app);
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve); });
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -25,10 +27,11 @@ async function setup(t) {
   });
   const call = (method, url, headers = {}, body) => fetch(base + url, {
     method,
+    redirect: 'manual',
     headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
     body: body ? JSON.stringify(body) : undefined,
   });
-  const login = (user, password) => call('POST', '/api/admin/login', {}, { user, password });
+  const login = (user, password, headers = {}) => call('POST', '/api/admin/login', headers, { user, password });
   return { base, call, login };
 }
 
@@ -105,4 +108,35 @@ test('too many wrong passwords block the login for a while', async (t) => {
   const blocked = await login('admin', 'password-di-prova');
   assert.equal(blocked.status, 429);
   assert.match((await blocked.json()).error, /Troppi tentativi/);
+});
+
+test('with HTTPS the console requires it, except from this PC', async (t) => {
+  // a proxy in front (AWS): the client address and the protocol come from X-Forwarded-*
+  const { call, login } = await setup(t, { trustProxy: true, https: { port: 443 } });
+  const remote = { 'X-Forwarded-For': '10.21.0.7', 'X-Forwarded-Proto': 'http' };
+
+  const page = await call('GET', '/admin', { ...remote, 'X-Forwarded-Host': 'photobooth.example' });
+  assert.equal(page.status, 301);
+  assert.equal(page.headers.get('location'), 'https://photobooth.example/admin');
+  const refused = await login('admin', 'password-di-prova', remote);
+  assert.equal(refused.status, 403);
+  assert.match((await refused.json()).error, /in chiaro/);
+  // the API key and the wall keep working over http
+  assert.equal((await call('GET', '/api/events', { ...remote, 'x-api-key': KEY })).status, 200);
+
+  const secure = await login('admin', 'password-di-prova', { ...remote, 'X-Forwarded-Proto': 'https' });
+  assert.equal(secure.status, 200);
+  assert.match(secure.headers.get('set-cookie'), /; Secure/);
+
+  // loopback over http: no network in between
+  const local = await login('admin', 'password-di-prova');
+  assert.equal(local.status, 200);
+  assert.doesNotMatch(local.headers.get('set-cookie'), /Secure/);
+});
+
+test('without HTTPS nothing changes', async (t) => {
+  const { call, login } = await setup(t, { trustProxy: true });
+  const remote = { 'X-Forwarded-For': '10.21.0.7' };
+  assert.equal((await call('GET', '/admin', remote)).status, 200);
+  assert.equal((await login('admin', 'password-di-prova', remote)).status, 200);
 });

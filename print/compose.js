@@ -1,5 +1,5 @@
 // Merges a photo into the PSD template, in place of the photo layer (named «card» or «FOTO», see
-// PHOTO_LAYERS). The photo fills that layer's box (cropped to fit, keeping the most interesting part)
+// PHOTO_LAYERS). The photo fills that layer's box (cropped to fit, keeping the centre)
 // and takes its layer mask.
 //
 // Two ways to draw the rest of the template:
@@ -146,6 +146,16 @@ export async function loadTemplate(file, { photoLayers = PHOTO_LAYERS, fontsDir 
   missing.forEach((layers, font) => {
     warnings.push(`font «${font}» mancante (${layers.join(', ')}): caricalo con «Aggiungi font» nell'admin, oppure metti il file .otf/.ttf nella cartella fonts accanto al PSD. Intanto si usa ${FALLBACK_FONT}`);
   });
+  const lacking = new Map();
+  texts.filter((t) => t.lacking.length).forEach((t) => {
+    const entry = lacking.get(t.fontName) || { chars: new Set(), layers: [] };
+    t.lacking.forEach((ch) => entry.chars.add(ch));
+    entry.layers.push(t.layerName);
+    lacking.set(t.fontName, entry);
+  });
+  lacking.forEach(({ chars, layers }, font) => {
+    warnings.push(`il font «${font}» (${layers.join(', ')}) non ha i caratteri «${[...chars].join('')}»: per quelli si usa ${FALLBACK_FONT}. Carica la versione completa del font, non la trial`);
+  });
   if (mode === 'composite') {
     const baked = texts.filter((t) => t.baked).map((t) => t.layerName);
     if (baked.length) {
@@ -177,7 +187,9 @@ function drawText(ctx, spec, value, k = { scale: 1, dx: 0, dy: 0 }, fit = 1) {
   const size = spec.fontSize * k.scale * fit;
   ctx.save();
   ctx.setTransform(a, b, c, d, tx + k.dx, ty + k.dy);
-  ctx.font = `${spec.italic ? 'italic ' : ''}${size}px "${spec.family}"`;
+  // characters the font lacks (trial fonts often have no digits) are taken from the fallback font
+  const fallback = spec.family === FALLBACK_FONT ? '' : `, "${FALLBACK_FONT}"`;
+  ctx.font = `${spec.italic ? 'italic ' : ''}${size}px "${spec.family}"${fallback}`;
   ctx.letterSpacing = `${(spec.tracking / 1000) * size}px`;
   ctx.fillStyle = spec.color;
   ctx.textAlign = spec.align;
@@ -255,6 +267,11 @@ function textSpec(f, fonts, canvas, warnings) {
     left: f.layer.left, top: f.layer.top, right: f.layer.right, bottom: f.layer.bottom,
   };
   spec.maxWidth = (target.right - target.left) * (spec.box ? 2.5 : 1.6);
+  // characters of the sample the font has no glyph for (reported by loadTemplate)
+  spec.lacking = fontFound ? [...new Set(spec.sample.replace(/\s/g, ''))].filter((ch) => !ink(canvas, (ctx) => {
+    ctx.font = `${spec.fontSize}px "${family}"`;
+    ctx.fillText(ch, canvas.width / 2, canvas.height / 2);
+  })) : [];
   const first = spec.sample && target.right > target.left ? ink(canvas, (ctx) => drawText(ctx, spec, spec.sample)) : null;
   if (first) {
     const scale = Math.min(2, Math.max(0.5, (target.bottom - target.top) / (first.bottom - first.top)));
@@ -337,7 +354,7 @@ export async function compose(photo, template, values = {}) {
       const box = template.photoBox;
       const pixels = await sharp(photo)
         .rotate() // honour the camera orientation
-        .resize(box.width, box.height, { fit: 'cover', position: sharp.strategy.attention })
+        .resize(box.width, box.height, { fit: 'cover', position: 'centre' })
         .ensureAlpha()
         .raw()
         .toBuffer();

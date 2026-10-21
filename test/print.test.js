@@ -218,9 +218,9 @@ test('the PDF page has the real size of the picture', async () => {
   assert.deepEqual([page.getWidth(), page.getHeight()], [432, 288]);
 });
 
-test('values for the template: name in capitals, scores with two digits', () => {
+test('values for the template: name as sent, scores with two digits', () => {
   assert.deepEqual(printValues({ userId: 'Mario Rossi', scores: SCORES }), {
-    name: 'MARIO ROSSI', total: '87', technique: '09', fun: '95', style: '78', performance: '100',
+    name: 'Mario Rossi', total: '87', technique: '09', fun: '95', style: '78', performance: '100',
   });
 });
 

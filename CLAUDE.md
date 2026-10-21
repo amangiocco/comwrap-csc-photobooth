@@ -36,7 +36,11 @@ a tutto schermo come un LED wall, raggiungibile da browser.
   rinnovate con l'uso, in memoria (riavvio = nuovo login), controllo Origin sulle scritture, blocco di
   5 min dopo 5 password sbagliate. La console può tutto; **solo la console**: `/api/info`, account e
   modelli email, template di stampa (caricamento/anteprima), log, `/api/admin/api-key` (per «Copia»).
-  Nel browser nessuna chiave. Wall e pagina print restano **pubblici** (scelta utente 2026-10-12, da
+  Nel browser nessuna chiave. **HTTPS della console** (richiesta utente 2026-10-21, `server/https.js`):
+  in locale con certificato in `.env` (`HTTPS_CERT`/`HTTPS_KEY`, es. mkcert, porta `HTTPS_PORT`, di
+  default 443) e su AWS dietro un proxy che fa HTTPS (`TRUST_PROXY`); quando c'è, `/admin` su http
+  rimanda a https e il login su http dà 403, salvo da loopback. Chiamate con la chiave, wall e print
+  restano anche su http (le curl di n8n non cambiano). Wall e pagina print restano **pubblici** (scelta utente 2026-10-12, da
   rivedere col deploy su AWS).
 - Server in ascolto su tutte le interfacce, porta 80 (indirizzi senza porta).
 - Indirizzo: **localhost con la porta in uso** (es. `http://localhost:80`) in link, esempi e
@@ -62,9 +66,12 @@ a tutto schermo come un LED wall, raggiungibile da browser.
 - Template: `templates/Comwrap-Network-TEMPLATE-COMWRAP-REPLysite.psd` (1080×1620, 200 dpi). La foto
   va **al posto del livello `card`** (nascosto, con maschera); sopra si usa la composita salvata da
   Photoshop. Il PSD ha testi segnaposto `{name}`, `{Performance}`, `{Style}`, `{Fun}`,
-  `{technique}`, `{total}`: riscritti con i valori della chiamata (`userid` → `{name}` in maiuscolo,
+  `{technique}`, `{total}`: riscritti con i valori della chiamata (`userid` → `{name}` così come arriva, maiuscole/minuscole
+  comprese: richiesta utente 2026-10-21,
   punteggi `total`, `technique`, `fun`, `style`, `performance` obbligatori, a 2 cifre) con
-  @napi-rs/canvas, tarati sul testo di esempio. Al 2026-10-01 mancano: i font Alaska
+  @napi-rs/canvas, tarati sul testo di esempio. I caratteri che il font non ha (gli Alaska trial
+  caricati il 2026-10-21 non hanno cifre né accentate) si prendono da Impact, con un avviso nel
+  template. Al 2026-10-01 mancano: i font Alaska
   (`templates/fonts/`, ora si usa Impact) e il PSD risalvato con i 6 segnaposto nascosti.
 - **Indirizzi per evento**: `/<slug>/wall` e `/<slug>/print`: GET la pagina, POST l'invio da n8n
   (video / foto); i vecchi `/wall/<slug>`, `/print/<slug>` reindirizzano, `/api/events/<slug>/videos`

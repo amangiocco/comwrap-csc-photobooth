@@ -75,11 +75,11 @@ async function printerPorts() {
 }
 
 /**
- * Texts for the template placeholders: {name} is the userid in capitals (as «NAME» in the
- * template), the scores have at least two digits (as «01»).
+ * Texts for the template placeholders: {name} is the userid as sent (capitals included), the
+ * scores have at least two digits (as «01»).
  */
 export function printValues(item) {
-  const values = { name: String(item.userId || '').toUpperCase() };
+  const values = { name: String(item.userId || '') };
   Object.entries(item.scores || {}).forEach(([key, value]) => {
     values[key.toLowerCase()] = String(value).padStart(2, '0');
   });

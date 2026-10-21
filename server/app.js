@@ -15,6 +15,7 @@ import { publicTemplate, templateRoutes } from './templates.js';
 import { mailRoutes, publicMailTemplate } from './mail.js';
 import { createLogger, logRoutes, requestLogger } from './logs.js';
 import { createAuth } from './auth.js';
+import { requireHttps } from './https.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -125,11 +126,14 @@ export function parsePlaceholder(value) {
 
 /**
  * options: { dataDir, apiKey, adminUser, adminPasswordHash, maxUploadMb, placeholder, publicUrl,
- *   showcaseSeconds, logRetentionDays, logger }
+ *   showcaseSeconds, logRetentionDays, logger, trustProxy, https }
+ * `trustProxy`: Express «trust proxy» (HTTPS done by a proxy in front). `https`: { port } when the
+ * console is reachable on HTTPS, so it is required there (see https.js).
  * Returns { app, store, hub, logger }.
  */
 export function createApp({
   dataDir, apiKey, adminUser = 'admin', adminPasswordHash, maxUploadMb = 500, placeholder = '', publicUrl = '', showcaseSeconds = 8,
+  trustProxy, https = null,
   logRetentionDays = 2, logger = createLogger({ dir: path.join(dataDir, 'logs'), retentionDays: logRetentionDays }),
 }) {
   const wallPlaceholder = parsePlaceholder(placeholder);
@@ -138,7 +142,9 @@ export function createApp({
   const maxBytes = maxUploadMb * 1024 * 1024;
   const app = express();
   app.disable('x-powered-by');
+  if (trustProxy !== undefined) app.set('trust proxy', trustProxy);
   app.use(requestLogger(logger));
+  if (https) app.use(requireHttps({ port: https.port, publicUrl }));
 
   // requireKey: API key (n8n, print agent) or console login; requireAdmin: console login only
   const auth = createAuth({
