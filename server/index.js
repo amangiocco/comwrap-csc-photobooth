@@ -26,6 +26,8 @@ console.log("Percorso cercato per .env:", ENV_FILE);
 
 dotenv.config({ path: ENV_FILE });
 
+console.log("ADMIN USER: ", process.env.ADMIN_PASSWORD_HASH)
+
 //dotenv.config({ path: ENV_FILE, quiet: true });
 
 /** Generates PHOTOBOOTH_API_KEY, appends it to .env and returns it. */
@@ -71,8 +73,6 @@ function lanAddresses() {
 const { key, created } = ensureApiKey();
 const admin = ensureAdminPassword();
 const adminUser = (process.env.ADMIN_USER || '').trim() || 'admin';
-
-console.log("ADMIN USER: ", process.env.ADMIN_USER)
 
 // «::» listens on IPv6 and IPv4 together: «localhost» (IPv6 first on Windows) answers at once
 const host = process.env.HOST || '::';
