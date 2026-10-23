@@ -1,10 +1,11 @@
 // Email: one mail account for the server (SMTP, set from the admin) and an HTML template per event,
-// imported from the admin together with its images. n8n calls POST /<event>/mail with the
-// recipient, the subject (set by the service, with {placeholders} too), the userid (first and
-// last name), the card made with the PSD template (file or URL) and the link to the EDS page
-// built in the flow: {userid}, {link} and {card} (an image:
-// <img src="{card}">) in the template, like any other parameter of the call ({name} or {{name}}).
-// The card is shown in the mail and attached. Nothing about the people is stored: the mail is
+// imported from the admin together with its images. n8n calls POST /api/mail with the recipient,
+// the subject (set by the service, with {placeholders} too), the name (first and last name), the
+// card made with the PSD template (file or URL) and the EDS page built in the flow: {name},
+// {page_url} and {scorecard_image_url} (an image: <img src="{scorecard_image_url}">) in the
+// template, {date} is today unless the call says otherwise; like any other parameter of the call
+// ({x} or {{x}}). The card is shown in the text of the mail (where the template has
+// {scorecard_image_url}, else at the end), not attached. Nothing about the people is stored: the mail is
 // sent at once and the answer says how it went; recipients, values and card are not written
 // anywhere (a downloaded card lives in a temporary file until the mail is sent), logs included.
 //
@@ -20,20 +21,28 @@ import multer from 'multer';
 import nodemailer from 'nodemailer';
 import { HttpError } from './store.js';
 import { PHOTO, downloadFile } from './download.js';
+import { eventOf } from './event-param.js';
 
 const SECURITY = { ssl: 'SSL/TLS (di solito porta 465)', starttls: 'STARTTLS (di solito porta 587)', none: 'Nessuna (solo reti interne)' };
 const IMAGE_FILE = /\.(png|jpe?g|gif|webp|svg)$/i;
 const HTML_FILE = /\.html?$/i;
 const PLACEHOLDER = /\{\{\s*([\w.-]+)\s*\}\}|\{\s*([\w.-]+)\s*\}/g;
 const EMAIL = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]+$/;
-// fields of the call that are not template parameters ({card} is the image, not the URL sent)
-const RESERVED = new Set(['to', 'cc', 'bcc', 'subject', 'params', 'card', 'cardUrl']);
+// The fields of the call have the names of the template's placeholders: name (first and last
+// name), page_url (the EDS page), scorecard_image_url (the card: file or URL, shown in the mail as
+// an image), date (today when not sent).
+const CARD = 'scorecard_image_url';
+// fields of the call that are not template parameters ({scorecard_image_url} is the image, not the
+// URL sent); «eventID» names the event of the call (event-param.js)
+const RESERVED = new Set(['to', 'cc', 'bcc', 'subject', 'params', CARD, 'eventID']);
 // what every call must carry, and what the template should use
-export const REQUIRED_PLACEHOLDERS = ['userid', 'card', 'link'];
+export const REQUIRED_PLACEHOLDERS = ['name', 'page_url', CARD];
+// {date} when the call has none: today, as «23 October 2026»
+const today = () => new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Rome' });
 const CARD_MAX_BYTES = 15 * 1024 * 1024;
 const CARD_MIME = { '.jpg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
 // a grey 2:3 card for the preview in the admin, where the real one is not there yet
-const SAMPLE_CARD = `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="540" height="810" viewBox="0 0 540 810"><rect width="540" height="810" fill="#d6d3d1"/><text x="270" y="405" font-family="sans-serif" font-size="44" fill="#57534e" text-anchor="middle">{card}</text></svg>')}`;
+const SAMPLE_CARD = `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="540" height="810" viewBox="0 0 540 810"><rect width="540" height="810" fill="#d6d3d1"/><text x="270" y="405" font-family="sans-serif" font-size="44" fill="#57534e" text-anchor="middle">{scorecard_image_url}</text></svg>')}`;
 
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -130,7 +139,7 @@ export function publicMailTemplate(event) {
     originalName: t.originalName,
     images: t.images,
     placeholders: t.placeholders,
-    // {userid}, {card}, {link} not used by the template: the call carries them anyway
+    // {name}, {page_url}, {scorecard_image_url} not used by the template: the call carries them anyway
     unused: REQUIRED_PLACEHOLDERS.filter((name) => !t.placeholders.includes(name)),
     uploadedAt: t.uploadedAt,
     previewUrl: `/api/events/${event.slug}/mail-template/preview`,
@@ -344,10 +353,10 @@ export function mailRoutes(app, {
       const bytes = await readFile(path.join(dir, 'images', name));
       return [name, `data:${MIME[path.extname(name).toLowerCase()] || 'application/octet-stream'};base64,${bytes.toString('base64')}`];
     })));
-    // in attributes (src="{card}", href="{link}") a sample value, in the text a highlight
+    // in attributes (src="{scorecard_image_url}", href="{page_url}") a sample value, in the text a highlight
     const inAttributes = html.replace(/(\s[\w:-]+\s*=\s*)(["'])([^"']*)\2/g, (all, attr, q, value) => {
       if (!placeholders(value).length) return all;
-      return `${attr}${q}${value.replace(PLACEHOLDER, (m, a, b) => ((a || b) === 'card' ? SAMPLE_CARD : '#'))}${q}`;
+      return `${attr}${q}${value.replace(PLACEHOLDER, (m, a, b) => ((a || b) === CARD ? SAMPLE_CARD : '#'))}${q}`;
     });
     const marked = inAttributes.replace(PLACEHOLDER, (all, a, b) => `<mark style="background:#fff3a3;color:#000">{${escapeHtml(a || b)}}</mark>`);
     res.type('html').send(swapImages(marked, images, (name) => data.get(name)));
@@ -364,15 +373,15 @@ export function mailRoutes(app, {
     },
   });
 
-  /** The card of the call: the uploaded file, or the image at the URL in «card» / «cardUrl». */
+  /** The card of the call: the uploaded file, or the image at the URL in «scorecard_image_url». */
   async function readCard(req) {
     const file = req.files?.[0];
     if (file) {
       const ext = PHOTO.extensionFor(file.mimetype, file.originalname);
       return { content: file.buffer, ext, contentType: CARD_MIME[ext] };
     }
-    const url = String(req.body?.cardUrl || req.body?.card || '').trim();
-    if (!url) throw new HttpError(400, 'Manca la card: mandala come file (multipart) o come URL nel campo «card».');
+    const url = String(req.body?.[CARD] || '').trim();
+    if (!url) throw new HttpError(400, `Manca la card: mandala come file (multipart) o come URL nel campo «${CARD}».`);
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'photobooth-card-'));
     try {
       const saved = await downloadFile(url, path.join(tmp, 'card'), { type: PHOTO, maxBytes: CARD_MAX_BYTES, timeoutMs: 30000 });
@@ -385,26 +394,28 @@ export function mailRoutes(app, {
 
   function readLink(value) {
     const text = String(value ?? '').trim();
-    if (!text) throw new HttpError(400, 'Manca «link»: l\'indirizzo della pagina EDS.');
+    if (!text) throw new HttpError(400, 'Manca «page_url»: l\'indirizzo della pagina EDS.');
     let url;
     try {
       url = new URL(text);
     } catch {
-      throw new HttpError(400, '«link» non è un indirizzo valido.');
+      throw new HttpError(400, '«page_url» non è un indirizzo valido.');
     }
-    if (!['http:', 'https:'].includes(url.protocol)) throw new HttpError(400, '«link» deve essere un indirizzo http/https.');
+    if (!['http:', 'https:'].includes(url.protocol)) throw new HttpError(400, '«page_url» deve essere un indirizzo http/https.');
     return url.href;
   }
 
-  // POST /<event>/mail (or /api/events/<event>/mail): JSON, form or multipart fields.
-  // to, subject (may hold {placeholders}), userid (first and last name), link (EDS page) and card
-  // (file, or URL in «card») are required; cc, bcc, params (object) or any other field: the
-  // values of the other {placeholders}.
-  app.post(['/:slug/mail', '/api/events/:slug/mail'], requireKey, (req, res, next) => cardUpload.any()(req, res, next), express.json(), express.urlencoded({ extended: false }), async (req, res) => {
-    const event = await store.get(req.params.slug);
+  /**
+   * Sends the mail of an event with the card. `body`: the fields of the call; `getCard()` gives the
+   * card ({ content, ext, contentType }), called only once the fields are checked.
+   * to, subject (may hold {placeholders}), name (first and last name) and page_url (EDS page) are
+   * required; date is today if not sent; cc, bcc, params (object) or any other field: the values
+   * of the other {placeholders}. Returns { ok, messageId, accepted, rejected, missing }; throws an
+   * HttpError (400 fields, 409 event off / no template / no account, 502 SMTP).
+   */
+  async function sendCardMail(event, body, getCard) {
     if (!event.active) throw new HttpError(409, `L'evento «${event.slug}» è spento: accendilo per inviare email.`);
     if (!event.mailTemplate) throw new HttpError(409, 'Questo evento non ha un modello email: importalo dall\'admin.');
-    const body = req.body || {};
     const to = readRecipients(body.to, 'to', { required: true });
     const cc = readRecipients(body.cc, 'cc');
     const bcc = readRecipients(body.bcc, 'bcc');
@@ -415,21 +426,27 @@ export function mailRoutes(app, {
       if (!RESERVED.has(key) && (typeof value !== 'object' || value === null)) values[key] = value;
     });
     if (body.params && typeof body.params === 'object') Object.assign(values, body.params);
-    values.userid = String(values.userid ?? body.userId ?? '').trim().slice(0, 200);
-    if (!values.userid) throw new HttpError(400, 'Manca «userid»: nome e cognome della persona.');
-    values.link = readLink(values.link);
-    const card = await readCard(req);
+    values.name = String(values.name ?? '').trim().slice(0, 200);
+    if (!values.name) throw new HttpError(400, 'Manca «name»: nome e cognome della persona.');
+    values.page_url = readLink(values.page_url);
+    if (!String(values.date ?? '').trim()) values.date = today();
+    const c = await loadConfig();
+    const mailer = await transport();
+    const card = await getCard();
     const cardCid = `card.${randomUUID().slice(0, 8)}@photobooth`;
-    values.card = `cid:${cardCid}`;
+    values[CARD] = `cid:${cardCid}`;
 
     const { dir, html, images } = await templateFiles(event.slug);
     const subject = fill(subjectText, values, { escape: false });
     const filled = fill(html, values);
     const cids = new Map(images.map((name, i) => [name, `img${i}.${randomUUID().slice(0, 8)}@photobooth`]));
-    const finalHtml = swapImages(filled.text, images, (name) => `cid:${cids.get(name)}`);
+    let finalHtml = swapImages(filled.text, images, (name) => `cid:${cids.get(name)}`);
+    // the card is always in the text: at the end when the template has no {scorecard_image_url}
+    if (!finalHtml.includes(values[CARD])) {
+      const img = `<p style="text-align:center"><img src="${values[CARD]}" alt="La tua card" style="max-width:100%;height:auto"></p>`;
+      finalHtml = /<\/body>/i.test(finalHtml) ? finalHtml.replace(/<\/body>/i, `${img}</body>`) : finalHtml + img;
+    }
     const used = images.filter((name) => finalHtml.includes(`cid:${cids.get(name)}`));
-    const c = await loadConfig();
-    const mailer = await transport();
     let info;
     try {
       info = await mailer.sendMail({
@@ -443,11 +460,10 @@ export function mailRoutes(app, {
         text: htmlToText(finalHtml),
         attachments: [
           ...used.map((name) => ({ filename: name, path: path.join(dir, 'images', name), cid: cids.get(name) })),
-          // the card twice: in the text (where the template has {card}) and as a file to download
-          ...(finalHtml.includes(values.card) ? [{
-            filename: `card${card.ext}`, content: card.content, contentType: card.contentType, cid: cardCid,
-          }] : []),
-          { filename: `card-${cleanName(values.userid).replace(/\s+/g, '-')}${card.ext}`, content: card.content, contentType: card.contentType },
+          // the card only in the text, not as an attachment
+          {
+            filename: `card${card.ext}`, content: card.content, contentType: card.contentType, cid: cardCid, contentDisposition: 'inline',
+          },
         ],
       });
     } catch (error) {
@@ -455,15 +471,23 @@ export function mailRoutes(app, {
     }
     // privacy: no addresses or values, only how it went
     logger?.info('attivita', `Email inviata (${info.accepted?.length || 0} destinatari accettati, ${info.rejected?.length || 0} rifiutati)`, { event: event.slug });
-    res.json({
+    return {
       ok: true,
       messageId: info.messageId,
       accepted: info.accepted?.length || 0,
       rejected: info.rejected?.length || 0,
       // placeholders of the template with no value in the call: left empty
       missing: [...new Set([...subject.missing, ...filled.missing])],
-    });
+    };
+  }
+
+  // POST /api/mail with the event as a parameter (or /<event>/mail, /api/events/<event>/mail):
+  // JSON, form or multipart fields, the card in scorecard_image_url (file, or URL). For tests and
+  // the admin: n8n sends the mail together with the photo (POST /api/photos).
+  app.post(['/api/mail', '/:slug/mail', '/api/events/:slug/mail'], requireKey, (req, res, next) => cardUpload.any()(req, res, next), express.json(), express.urlencoded({ extended: false }), async (req, res) => {
+    const event = await store.get(eventOf(req, res));
+    res.json(await sendCardMail(event, req.body || {}, () => readCard(req)));
   });
 
-  return { describe };
+  return { describe, sendCardMail };
 }

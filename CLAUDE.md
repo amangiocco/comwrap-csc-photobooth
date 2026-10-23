@@ -63,6 +63,17 @@ a tutto schermo come un LED wall, raggiungibile da browser.
   server su AWS), unisce la foto al template PSD con ag-psd + sharp, salva JPEG + PDF della misura
   del template, manda l'anteprima al server e stampa con pdf-to-printer su una stampante **USB**
   installata in Windows. La stampante foto non è ancora collegata (`PRINTER_NAME` vuoto = salva solo).
+- **Una chiamata per stampa e mail** (decisione utente 2026-10-23): n8n chiama solo `POST /api/photos`
+  (foto, `name` = nome e cognome, punteggi, `copies` e, per la mail, `to`, `subject`, `page_url`,
+  `video_url`, cc/bcc; `date` = oggi). Il **server crea la card** (`server/cards.js`: template caricato
+  per l'evento, altrimenti `PRINT_TEMPLATE` locale; senza nessuno niente card, l'agente usa il suo e la
+  mail riceve la foto) e la salva accanto alla foto (`<file>.card.jpg`, `cardUrl` per l'agente con
+  chiave). Poi **in parallelo** la mette in coda e, se c'è `to`, manda la mail con la stessa card.
+  Risposta **201** con `print` e `mail` (`null` senza `to`, oppure `ok` true/false con `status` ed
+  `error`): una parte che fallisce non ferma l'altra; 400 solo per foto/name/punteggi mancanti, 500
+  se la card non si crea o falliscono entrambe. L'agente stampa la card del server senza ricomporla.
+  Niente ristampa con nuova mail: se il servizio è rotto si rifà da capo. `/api/mail` resta **solo
+  per prova** (e per la mail di prova dell'admin).
 - Template: `templates/Comwrap-Network-TEMPLATE-COMWRAP-REPLysite.psd` (1080×1620, 200 dpi). La foto
   va **al posto del livello `card`** (nascosto, con maschera); sopra si usa la composita salvata da
   Photoshop. Il PSD ha testi segnaposto `{name}`, `{Performance}`, `{Style}`, `{Fun}`,
@@ -73,6 +84,13 @@ a tutto schermo come un LED wall, raggiungibile da browser.
   caricati il 2026-10-21 non hanno cifre né accentate) si prendono da Impact, con un avviso nel
   template. Al 2026-10-01 mancano: i font Alaska
   (`templates/fonts/`, ora si usa Impact) e il PSD risalvato con i 6 segnaposto nascosti.
+- **API con l'evento come parametro** (richiesta utente 2026-10-22, `server/event-param.js`): le
+  chiamate di n8n hanno indirizzi fissi, uguali per ogni evento: `POST /api/videos`, `/api/photos`,
+  `/api/mail`, `PATCH|DELETE /api/events`, `DELETE /api/videos[/:id]`, `/api/photos[/:id]`,
+  `POST /api/photos/:id/reprint`, `GET /api/wall`, `/api/prints`. L'evento è **`eventID`** (solo questo
+  nome, scelta utente 2026-10-23): campo del corpo (JSON, form, multipart anche dopo il file: il file va
+  in `data/incoming/` e poi si sposta), `?eventID=` o header `x-event-id`. Il pannello «Chiamate da n8n» mostra queste; i vecchi indirizzi restano validi.
+  La console usa ancora internamente `/api/events/<slug>/...`.
 - **Indirizzi per evento**: `/<slug>/wall` e `/<slug>/print`: GET la pagina, POST l'invio da n8n
   (video / foto); i vecchi `/wall/<slug>`, `/print/<slug>` reindirizzano, `/api/events/<slug>/videos`
   e `/photos` restano validi. Nomi evento riservati in `RESERVED_SLUGS` (store.js).
@@ -108,12 +126,15 @@ a tutto schermo come un LED wall, raggiungibile da browser.
   in admin con i segnaposto evidenziati. **L'oggetto non è nel modello**: `subject` è obbligatorio
   nella chiamata, configurabile dal servizio, con segnaposto (richiesta utente 2026-10-02).
   n8n chiama `POST /<slug>/mail` (o `/api/events/<slug>/mail`) con la chiave, JSON/form/multipart.
-  Obbligatori (decisione utente 2026-10-02): `to`, `subject`, `userid` (contiene **nome e cognome**), `link`
-  (URL http/https della **pagina EDS** costruita nel flusso) e `card` (la card generata col PSD,
-  **la manda n8n**: file nel multipart, qualsiasi campo, oppure URL nel campo `card` scaricato in
-  un file temporaneo cancellato subito). Nel modello `{userid}`, `{link}` e `<img src="{card}">`:
-  la card è **nel testo e anche allegata** (`card-Nome-Cognome.jpg`); se il modello non usa
-  `{card}` è solo allegata. L'admin avvisa se il modello non usa uno dei tre (`unused`).
+  I campi hanno i **nomi dei segnaposto del modello** (richiesta utente 2026-10-23, al posto di
+  userid/link/card): obbligatori `to`, `subject`, `name` (**nome e cognome**), `page_url` (URL http/https
+  della **pagina EDS** costruita nel flusso) e `scorecard_image_url` (la card generata col PSD, **la
+  manda n8n**: file nel multipart, qualsiasi campo, oppure URL scaricato in un file temporaneo
+  cancellato subito). `date` facoltativo: senza, la data di oggi («23 October 2026», en-GB, ora di
+  Roma). Nel modello `{name}`, `{page_url}`, `{date}` e `<img src="{scorecard_image_url}">`:
+  la card è **solo nel testo, non allegata** (immagine `cid:` inline, richiesta utente 2026-10-23);
+  se il modello non usa `{scorecard_image_url}` va in fondo al testo. L'admin avvisa se il modello
+  non usa name, page_url o scorecard_image_url (`unused`).
   `cc`/`bcc` facoltativi (max 50), gli altri campi (o
   l'oggetto `params`) riempiono `{nome}` / `{{nome}}` nel testo e nell'oggetto. Risposta: `ok`,
   `messageId`, `accepted`, `rejected`, `missing` (segnaposto senza valore, lasciati vuoti).

@@ -10,12 +10,17 @@ import { createApp } from '../server/app.js';
 import { ADMIN_HASH, adminCookie } from './helpers/admin.js';
 import { fill, placeholders } from '../server/mail.js';
 import { startSmtp } from './helpers/smtp.js';
+import { W, bluePhoto, writeCardTemplate } from './helpers/template.js';
+
+const SCORES = {
+  total: 87, technique: 90, fun: 95, style: 78, performance: 85,
+};
 
 const KEY = 'k';
-const HTML = `<!doctype html><html><head><title>Ciao {userid}, ecco la tua card</title>
+const HTML = `<!doctype html><html><head><title>Ciao {name}, ecco la tua card</title>
 <style>body{color:#333} .a { color: red }</style></head>
 <body style="background:url('sfondo.png')"><img src="img/logo.png" alt="logo">
-<h1>Ciao {{userid}}!</h1><img src="{card}" alt="card"><p>Punteggio: {total}</p><p><a href="{link}">La tua pagina</a></p>
+<h1>Ciao {{name}}!</h1><img src="{scorecard_image_url}" alt="card"><p>Punteggio: {total}</p><p>On {{date}}</p><p><a href="{page_url}">La tua pagina</a></p>
 <img src="https://esempio.it/esterna.png"></body></html>`;
 const LINK = 'https://main--photobooth--comwrap.aem.page/mario-rossi';
 
@@ -23,7 +28,7 @@ const LINK = 'https://main--photobooth--comwrap.aem.page/mario-rossi';
 function withCard(fields, card) {
   const form = new FormData();
   Object.entries(fields).forEach(([k, v]) => form.append(k, v));
-  if (card) form.append('card', new Blob([card], { type: 'image/jpeg' }), 'card.jpg');
+  if (card) form.append('scorecard_image_url', new Blob([card], { type: 'image/jpeg' }), 'card.jpg');
   return form;
 }
 
@@ -71,7 +76,7 @@ const account = (smtp) => ({
 });
 
 test('placeholders: {a} and {{a}}, not CSS; values escaped in HTML', () => {
-  assert.deepEqual(placeholders(HTML), ['userid', 'card', 'total', 'link']);
+  assert.deepEqual(placeholders(HTML), ['name', 'scorecard_image_url', 'total', 'date', 'page_url']);
   const { text, missing } = fill('<p>{name} {total} {nope}</p>', { name: '<b>Mario</b>', total: 87 });
   assert.equal(text, '<p>&lt;b&gt;Mario&lt;/b&gt; 87 </p>');
   assert.deepEqual(missing, ['nope']);
@@ -103,20 +108,20 @@ test('template import, preview and sending with the parameters of the call', asy
   form.append('file', new Blob([logo], { type: 'image/png' }), 'sfondo.png');
   const imported = await (await call('POST', '/api/events/festa/mail-template', { body: form })).json();
   assert.equal(imported.subject, undefined, 'the subject comes with every call, not from the template');
-  assert.deepEqual(imported.placeholders, ['userid', 'card', 'total', 'link']);
+  assert.deepEqual(imported.placeholders, ['name', 'scorecard_image_url', 'total', 'date', 'page_url']);
   assert.deepEqual(imported.unused, []);
   assert.deepEqual(imported.images.sort(), ['logo.png', 'sfondo.png']);
 
   const preview = await (await call('GET', imported.previewUrl)).text();
   assert.match(preview, /src="data:image\/png;base64,/);
-  assert.match(preview, /<mark[^>]*>\{userid\}<\/mark>/);
+  assert.match(preview, /<mark[^>]*>\{name\}<\/mark>/);
   assert.match(preview, /<img src="data:image\/svg\+xml;utf8,[^"]+" alt="card">/, 'a sample card, the attribute not broken');
   assert.match(preview, /<a href="#">/);
 
   // the card as a file of the multipart call
   const sent = await (await call('POST', '/festa/mail', {
     body: withCard({
-      to: 'mario@esempio.it', subject: 'Ciao {userid}, ecco la tua card', userid: 'Mario Rossi', total: '87', link: LINK,
+      to: 'mario@esempio.it', subject: 'Ciao {name}, ecco la tua card', name: 'Mario Rossi', total: '87', page_url: LINK,
     }, card),
   })).json();
   assert.equal(sent.ok, true);
@@ -124,20 +129,23 @@ test('template import, preview and sending with the parameters of the call', asy
   const raw = smtp.messages.at(-1).raw.replace(/=\r\n/g, '');
   assert.match(raw, /Subject: Ciao Mario Rossi, ecco la tua card/);
   assert.match(raw, /Ciao Mario Rossi!/);
+  assert.match(raw, new RegExp(`On ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Rome' })}`), '{date}: today');
   assert.match(raw, /src=3D"cid:img/);
   assert.match(raw, /Content-ID: <img/);
   assert.match(raw, /src=3D"cid:card\./, 'the card in the text');
   assert.match(raw, /Content-ID: <card\./);
-  assert.match(raw, /filename=card-Mario-Rossi\.jpg/, 'and attached');
+  assert.match(raw, /Content-Disposition: inline; filename=card\.jpg/, 'inline, not attached');
+  assert.doesNotMatch(raw, /Content-Disposition: attachment/);
   assert.match(raw, new RegExp(`href=3D"${LINK.replace(/[.]/g, '\\.')}"`));
   assert.match(raw, /https:\/\/esempio\.it\/esterna\.png/, 'absolute images untouched');
 
   // or as a URL the server downloads (and does not keep)
   const before = (await readdir(os.tmpdir())).filter((n) => n.startsWith('photobooth-card-')).length;
   assert.equal((await json('POST', '/festa/mail', {
-    to: 'anna@esempio.it', subject: 'La tua card', userid: 'Anna Bianchi', link: LINK, card: cardUrl, total: 90,
+    to: 'anna@esempio.it', subject: 'La tua card', name: 'Anna Bianchi', page_url: LINK, scorecard_image_url: cardUrl, total: 90, date: '1 May 2027',
   })).status, 200);
-  assert.match(smtp.messages.at(-1).raw.replace(/=\r\n/g, ''), /filename=card-Anna-Bianchi\.jpg/);
+  assert.match(smtp.messages.at(-1).raw.replace(/=\r\n/g, ''), /src=3D"cid:card\./);
+  assert.match(smtp.messages.at(-1).raw.replace(/=\r\n/g, ''), /On 1 May 2027/, 'the date of the call wins');
   assert.equal((await readdir(os.tmpdir())).filter((n) => n.startsWith('photobooth-card-')).length, before, 'temporary card removed');
 
   // nothing about the people is kept on the server
@@ -153,36 +161,37 @@ test('sending: checks and errors', async (t) => {
     call, json, smtp, cardUrl,
   } = await setup(t);
   const ok = {
-    to: 'a@b.it', subject: 'Prova', userid: 'Mario Rossi', link: LINK, card: cardUrl,
+    to: 'a@b.it', subject: 'Prova', name: 'Mario Rossi', page_url: LINK, scorecard_image_url: cardUrl,
   };
   assert.equal((await json('POST', '/festa/mail', ok)).status, 409, 'no template yet');
   const form = new FormData();
-  form.append('file', new Blob(['<p>Ciao {userid} {name}</p>'], { type: 'text/html' }), 'm.html');
+  form.append('file', new Blob(['<p>Ciao {name} {nickname}</p>'], { type: 'text/html' }), 'm.html');
   const imported = await (await call('POST', '/api/events/festa/mail-template', { body: form })).json();
-  assert.deepEqual(imported.unused, ['card', 'link'], 'the admin warns about what the template does not use');
+  assert.deepEqual(imported.unused, ['page_url', 'scorecard_image_url'], 'the admin warns about what the template does not use');
   assert.equal((await json('POST', '/festa/mail', ok)).status, 409, 'no account yet');
   await json('PUT', '/api/mail/config', account(smtp));
   assert.equal((await json('POST', '/festa/mail', { ...ok, to: undefined })).status, 400, 'recipient required');
   assert.equal((await json('POST', '/festa/mail', { ...ok, to: 'non-una-mail' })).status, 400);
   assert.match((await (await json('POST', '/festa/mail', { ...ok, subject: ' ' })).json()).error, /subject/);
-  assert.match((await (await json('POST', '/festa/mail', { ...ok, userid: ' ' })).json()).error, /userid/);
-  assert.match((await (await json('POST', '/festa/mail', { ...ok, link: undefined })).json()).error, /link/);
-  assert.equal((await json('POST', '/festa/mail', { ...ok, link: 'javascript:alert(1)' })).status, 400);
-  assert.match((await (await json('POST', '/festa/mail', { ...ok, card: undefined })).json()).error, /card/);
-  assert.equal((await json('POST', '/festa/mail', { ...ok, card: `${cardUrl}.nope` })).status, 502, 'card URL not found');
+  assert.match((await (await json('POST', '/festa/mail', { ...ok, name: ' ' })).json()).error, /name/);
+  assert.match((await (await json('POST', '/festa/mail', { ...ok, page_url: undefined })).json()).error, /page_url/);
+  assert.equal((await json('POST', '/festa/mail', { ...ok, page_url: 'javascript:alert(1)' })).status, 400);
+  assert.match((await (await json('POST', '/festa/mail', { ...ok, scorecard_image_url: undefined })).json()).error, /scorecard_image_url/);
+  assert.equal((await json('POST', '/festa/mail', { ...ok, scorecard_image_url: `${cardUrl}.nope` })).status, 502, 'card URL not found');
   assert.equal((await json('POST', '/festa/mail', ok, { key: 'no' })).status, 401);
   const partial = await (await json('POST', '/festa/mail', ok)).json();
-  assert.deepEqual(partial.missing, ['name'], 'sent anyway, reports what was empty');
-  assert.match(smtp.messages.at(-1).raw, /filename=card-Mario-Rossi\.jpg/, 'attached even if the template does not show it');
-  assert.doesNotMatch(smtp.messages.at(-1).raw, /Content-ID: <card\./);
+  assert.deepEqual(partial.missing, ['nickname'], 'sent anyway, reports what was empty');
+  const last = smtp.messages.at(-1).raw.replace(/=\r\n/g, '');
+  assert.match(last, /<img src=3D"cid:card\./, 'at the end of the text when the template does not show it');
+  assert.doesNotMatch(last, /Content-Disposition: attachment/);
   const refused = await json('POST', '/festa/mail', { ...ok, to: 'rifiuta@b.it' });
   assert.equal(refused.status, 502);
   assert.match((await refused.json()).error, /Invio non riuscito/);
   // a file that is not an image is refused
   const notImage = withCard({
-    to: 'c@d.it', subject: 'Prova', userid: 'Anna', link: LINK,
+    to: 'c@d.it', subject: 'Prova', name: 'Anna', page_url: LINK,
   });
-  notImage.append('card', new Blob(['ciao'], { type: 'text/plain' }), 'card.txt');
+  notImage.append('scorecard_image_url', new Blob(['ciao'], { type: 'text/plain' }), 'card.txt');
   assert.equal((await call('POST', '/festa/mail', { body: notImage })).status, 415);
 
   await json('PATCH', '/api/events/festa', { active: false });
@@ -191,4 +200,59 @@ test('sending: checks and errors', async (t) => {
   const [event] = await (await call('GET', '/api/events')).json();
   assert.equal(event.mailTemplate, null);
   assert.ok(!existsSync(path.join(os.tmpdir(), 'never')));
+});
+
+test('one call: the card is made, queued for printing and mailed at once', async (t) => {
+  const {
+    dir, call, json, smtp,
+  } = await setup(t);
+  const psd = await readFile(await writeCardTemplate(dir));
+  const tplForm = new FormData();
+  tplForm.append('file', new Blob([psd]), 'cornice.psd');
+  assert.equal((await call('POST', '/api/events/festa/template', { body: tplForm })).status, 201);
+  const mailForm = new FormData();
+  mailForm.append('file', new Blob([HTML], { type: 'text/html' }), 'card.html');
+  await call('POST', '/api/events/festa/mail-template', { body: mailForm });
+  await json('PUT', '/api/mail/config', account(smtp));
+
+  const photo = async (fields) => {
+    const form = new FormData();
+    form.append('foto', new Blob([await bluePhoto()], { type: 'image/png' }), 'a.png');
+    Object.entries({ eventID: 'festa', name: 'Mario Rossi', ...SCORES, ...fields }).forEach(([k, v]) => form.append(k, String(v)));
+    return call('POST', '/api/photos', { body: form });
+  };
+  const mailFields = { to: 'mario@esempio.it', subject: '{name}, la tua card', page_url: LINK };
+
+  const both = await photo(mailFields);
+  assert.equal(both.status, 201);
+  const sent = await both.json();
+  assert.deepEqual(sent.print, { ok: true, status: 'queued', copies: 1 });
+  assert.equal(sent.mail.ok, true);
+  assert.equal(sent.mail.accepted, 1);
+  // the picture in the mail is the card that goes to the printer
+  const card = Buffer.from(await (await call('GET', sent.cardUrl)).arrayBuffer());
+  const raw = smtp.messages.at(-1).raw;
+  assert.match(raw.replace(/=\r\n/g, ''), /Subject: Mario Rossi, la tua card/);
+  const part = raw.split(/\r\n--[^\r\n]+/).find((p) => p.includes('Content-ID: <card.'));
+  const inline = part.slice(part.indexOf('\r\n\r\n') + 4);
+  assert.ok(Buffer.from(inline.replace(/\s+/g, ''), 'base64').equals(card), 'same bytes as the printed card');
+  assert.equal((await sharp(card).metadata()).width, W, 'the card has the size of the template');
+
+  // the mail fails: the photo is printed anyway, 201 with the reason
+  const refused = await photo({ ...mailFields, to: 'rifiuta@esempio.it' });
+  assert.equal(refused.status, 201);
+  const r = await refused.json();
+  assert.equal(r.print.ok, true);
+  assert.deepEqual([r.mail.ok, r.mail.status], [false, 502]);
+  const wrong = await (await photo({ ...mailFields, page_url: 'non-un-link' })).json();
+  assert.deepEqual([wrong.print.ok, wrong.mail.ok, wrong.mail.status], [true, false, 400]);
+  assert.match(wrong.mail.error, /page_url/);
+
+  // no «to»: only the print
+  assert.equal((await (await photo({})).json()).mail, null);
+  // missing scores: nothing is done
+  assert.equal((await photo({ total: '' })).status, 400);
+  const queue = await (await call('GET', '/api/print/queue')).json();
+  assert.equal(queue.length, 4);
+  assert.equal(smtp.messages.length, 1, 'only the good mail went out');
 });

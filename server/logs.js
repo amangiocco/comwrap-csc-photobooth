@@ -143,17 +143,17 @@ export function createLogger({ dir, retentionDays = 2, now = Date.now } = {}) {
 // --- HTTP calls -------------------------------------------------------------------------------
 // what each call does, for the log (first match wins)
 const ROUTES = [
-  ['POST', /^\/(?:api\/events\/[^/]+\/videos|[^/]+\/wall)$/, 'Video da n8n'],
-  ['POST', /^\/(?:api\/events\/[^/]+\/photos|[^/]+\/print)$/, 'Foto da stampare da n8n'],
-  ['POST', /^\/(?:api\/events\/[^/]+\/mail|[^/]+\/mail)$/, 'Email da n8n'],
+  ['POST', /^\/(?:api\/videos|api\/events\/[^/]+\/videos|[^/]+\/wall)$/, 'Video da n8n'],
+  ['POST', /^\/(?:api\/photos|api\/events\/[^/]+\/photos|[^/]+\/print)$/, 'Foto da stampare da n8n'],
+  ['POST', /^\/(?:api\/mail|api\/events\/[^/]+\/mail|[^/]+\/mail)$/, 'Email da n8n'],
   ['POST', /^\/api\/events$/, 'Evento creato'],
-  ['PATCH', /^\/api\/events\/[^/]+$/, 'Evento modificato'],
-  ['DELETE', /^\/api\/events\/[^/]+$/, 'Evento eliminato'],
-  ['DELETE', /^\/api\/events\/[^/]+\/videos$/, 'Tutti i video eliminati'],
-  ['DELETE', /^\/api\/events\/[^/]+\/videos\/[^/]+$/, 'Video eliminato'],
-  ['DELETE', /^\/api\/events\/[^/]+\/photos$/, 'Tutte le foto eliminate'],
-  ['DELETE', /^\/api\/events\/[^/]+\/photos\/[^/]+$/, 'Foto eliminata'],
-  ['POST', /^\/api\/events\/[^/]+\/photos\/[^/]+\/reprint$/, 'Ristampa'],
+  ['PATCH', /^\/api\/events(\/[^/]+)?$/, 'Evento modificato'],
+  ['DELETE', /^\/api\/events(\/[^/]+)?$/, 'Evento eliminato'],
+  ['DELETE', /^\/api\/(events\/[^/]+\/)?videos$/, 'Tutti i video eliminati'],
+  ['DELETE', /^\/api\/(events\/[^/]+\/)?videos\/[^/]+$/, 'Video eliminato'],
+  ['DELETE', /^\/api\/(events\/[^/]+\/)?photos$/, 'Tutte le foto eliminate'],
+  ['DELETE', /^\/api\/(events\/[^/]+\/)?photos\/[^/]+$/, 'Foto eliminata'],
+  ['POST', /^\/api\/(events\/[^/]+\/)?photos\/[^/]+\/reprint$/, 'Ristampa'],
   ['POST', /^\/api\/print\/photos\/[^/]+\/claim$/, 'Servizio di stampa: foto presa in carico'],
   ['POST', /^\/api\/print\/photos\/[^/]+\/preview$/, 'Servizio di stampa: anteprima'],
   ['POST', /^\/api\/print\/photos\/[^/]+\/result$/, 'Servizio di stampa: esito'],
@@ -177,7 +177,7 @@ const ROUTES = [
 // reads repeated every few seconds (admin, wall without live, print agent): logged only on error
 const QUIET = [
   /^\/static\//, /^\/media\//, /^\/favicon/, /^\/api\/health$/, /^\/api\/info$/, /^\/api\/events$/,
-  /^\/api\/print\/queue$/, /^\/api\/events\/[^/]+\/(wall|prints|stream|live)$/, /^\/api\/logs$/,
+  /^\/api\/print\/queue$/, /^\/api\/events\/[^/]+\/(wall|prints|stream|live)$/, /^\/api\/(wall|prints)$/, /^\/api\/logs$/,
   /\/preview$/, /^\/api\/mail\/config$/, /^\/api\/admin\/session$/,
 ];
 const SLUG = /^\/(?:api\/events\/|wall\/|print\/)?([a-z0-9][a-z0-9-]{0,62})(?:\/|$)/;
@@ -198,7 +198,8 @@ export function requestLogger(logger) {
       if (!write && status < 400 && QUIET.some((re) => re.test(pathname))) return;
       if (req.method === 'OPTIONS') return;
       const m = /^\/api\/print\//.test(pathname) ? null : SLUG.exec(pathname);
-      const event = m && !NOT_EVENTS.has(m[1]) ? m[1] : undefined;
+      // the event named as a parameter of the call (event-param.js), else the one in the path
+      const event = res.locals.event || (m && !NOT_EVENTS.has(m[1]) ? m[1] : undefined);
       logger.add({
         level: status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info',
         type: 'http',

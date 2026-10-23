@@ -86,6 +86,8 @@ export function createStore(dataDir) {
     previewsRoot,
     previewsDir: (slug) => path.join(previewsRoot, slug),
     templatesDir: (slug) => path.join(templatesRoot, slug),
+    // uploads whose event is known only after reading the file's fields (see event-param.js)
+    incomingDir: path.join(dataDir, 'incoming'),
 
     async list() {
       return load();
@@ -176,6 +178,7 @@ export function createStore(dataDir) {
       await persist();
       await Promise.all(removed.flatMap((p) => [
         rm(path.join(photosRoot, slug, p.file), { force: true }),
+        p.cardFile ? rm(path.join(photosRoot, slug, p.cardFile), { force: true }) : null,
         p.previewFile ? rm(path.join(previewsRoot, slug, p.previewFile), { force: true }) : null,
       ]));
       return removed;
@@ -221,6 +224,7 @@ export function createStore(dataDir) {
       const [photo] = event.photos.splice(index, 1);
       await persist();
       await rm(path.join(photosRoot, slug, photo.file), { force: true });
+      if (photo.cardFile) await rm(path.join(photosRoot, slug, photo.cardFile), { force: true });
       if (photo.previewFile) await rm(path.join(previewsRoot, slug, photo.previewFile), { force: true });
       return photo;
     },

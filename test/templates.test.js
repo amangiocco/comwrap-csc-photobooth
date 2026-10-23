@@ -46,7 +46,7 @@ async function setup(t) {
   };
 }
 
-test('a PSD uploaded from the admin is checked, previewed and used by the agent', async (t) => {
+test('a PSD uploaded from the admin is checked, previewed and used for the card that is printed', async (t) => {
   const {
     dir, base, call, upload,
   } = await setup(t);
@@ -61,13 +61,16 @@ test('a PSD uploaded from the admin is checked, previewed and used by the agent'
   assert.equal(preview.status, 200);
   assert.equal((await sharp(Buffer.from(await preview.arrayBuffer())).metadata()).format, 'jpeg');
 
-  // the queue tells the agent which template to download
+  // the server makes the card with the uploaded template when the photo arrives
   const form = new FormData();
   Object.entries(SCORES).forEach(([k, v]) => form.append(k, String(v)));
   form.append('foto', new Blob([await bluePhoto()], { type: 'image/png' }), 'a.png');
-  await call('POST', '/festa/print', { body: form });
+  const sent = await (await call('POST', '/festa/print', { body: form })).json();
+  assert.deepEqual(sent.print, { ok: true, status: 'queued', copies: 1 });
+  assert.equal(sent.mail, null, 'no «to»: no mail');
   const [item] = await (await call('GET', '/api/print/queue')).json();
   assert.equal(item.template.version, tpl.version);
+  assert.equal(item.cardUrl, `/api/print/photos/${item.id}/card`);
 
   const logs = [];
   const agent = createAgent({
@@ -80,8 +83,9 @@ test('a PSD uploaded from the admin is checked, previewed and used by the agent'
     log: (line) => logs.push(line),
   });
   const [file] = await agent.runOnce();
-  assert.ok(logs.some((line) => line.startsWith('Template dell\'evento Festa aggiornato')), logs.join('\n'));
-  assert.ok(existsSync(path.join(dir, 'cache', 'festa', tpl.version, 'template.psd')));
+  // the agent prints the server's card: it does not download the template
+  assert.ok(!logs.some((line) => line.startsWith('Template dell\'evento')), logs.join('\n'));
+  assert.ok(!existsSync(path.join(dir, 'cache', 'festa')));
   // the sheet holds the composed template: green frame of the test PSD around the photo
   const { data, info } = await sharp(await readFile(file)).raw().toBuffer({ resolveWithObject: true });
   const at = (x, y) => [...data.subarray((y * info.width + x) * 3, (y * info.width + x) * 3 + 3)];

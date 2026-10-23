@@ -34,6 +34,11 @@
     details.event > :last-child { margin-bottom: 16px; }
     details.event .toolbar { margin-top: 14px; }
     details.event details { border-top: 1px solid var(--line); padding-top: 12px; }
+    /* the calls for n8n, in two boxes: the main ones and all the others */
+    details.event details.calls { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-top: 12px; }
+    details.calls > summary { font-weight: 600; }
+    details.calls[open] > summary { margin-bottom: 4px; }
+    details.calls h4:first-of-type { margin-top: 10px; }
     .call { margin: 10px 0 16px; }
     .call p { margin: 4px 0; }
     .call pre { margin: 6px 0 0; }

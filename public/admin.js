@@ -106,105 +106,122 @@ async function readApiKey() {
 // --- calls n8n can make, as curl commands (bash: Git Bash, macOS, Linux) ----------------------
 const MAIL_SAMPLE = {
   to: 'mario.rossi@esempio.it',
-  subject: '{userid}, ecco la tua card',
-  userid: 'Mario Rossi',
-  link: 'https://main--sito--org.aem.page/mario-rossi',
+  subject: '{name}, ecco la tua card',
+  name: 'Mario Rossi',
+  page_url: 'https://main--sito--org.aem.page/mario-rossi',
+  video_url: 'https://esempio.it/video.mp4',
   total: '87',
 };
+// {date} is left out: the server puts today's date
 function mailExampleFields(event) {
-  const names = ['to', 'subject', 'userid', 'link', ...(event.mailTemplate?.placeholders || [])];
-  return [...new Set(names)].filter((name) => name === 'to' || name === 'subject' || !MAIL_RESERVED.has(name))
+  const names = ['to', 'subject', 'name', 'page_url', ...(event.mailTemplate?.placeholders || [])];
+  return [...new Set(names)].filter((name) => name === 'to' || name === 'subject' || (!MAIL_RESERVED.has(name) && name !== 'date'))
     .map((name) => [name, MAIL_SAMPLE[name] ?? '...']);
 }
 
-/** The calls, in groups: { group, calls: [{ title, note, cmd }] }. */
+/**
+ * The calls, in groups: { group, calls: [{ title, note, cmd }] }. The addresses are the same for
+ * every event: the event goes as the «eventID» parameter (field of the body, or ?eventID= without a body).
+ */
 function n8nCalls(event) {
   const b = base;
-  const s = encodeURIComponent(event.slug);
+  const ev = event.slug;
+  const q = `eventID=${encodeURIComponent(ev)}`;
   const key = '  -H "x-api-key: $PHOTOBOOTH_API_KEY"';
-  const jsonBody = (data) => `  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(data)}'`;
+  const jsonBody = (data) => `  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({ eventID: ev, ...data })}'`;
   const join = (...parts) => parts.join(' \\\n');
+  const field = `  -F "eventID=${ev}"`;
   const scores = { total: 87, technique: 90, fun: 95, style: 78, performance: 85 };
   const mailFields = mailExampleFields(event);
   return [
     {
       group: 'Video sul wall',
+      main: true,
       calls: [
         {
           title: 'Video come file',
-          note: 'n8n: nodo HTTP Request, Body «Form-Data», parametro «n8n Binary File» (qualsiasi nome di campo). MP4, WebM, MOV, M4V, OGV.',
-          cmd: `curl -X POST "${b}/${s}/wall" \\\n${join(key, '  -F "video=@video.mp4"', '  -F "userid=Mario Rossi"', '  -F "title=Il video di Mario"')}`,
+          note: 'n8n: nodo HTTP Request, Body «Form-Data», parametro «n8n Binary File» (qualsiasi nome di campo) più il campo eventID. MP4, WebM, MOV, M4V, OGV.',
+          cmd: `curl -X POST "${b}/api/videos" \\\n${join(key, field, '  -F "video=@video.mp4"', '  -F "userid=Mario Rossi"', '  -F "title=Il video di Mario"')}`,
         },
         {
           title: 'Video da URL',
           note: 'Il server scarica il video dall\'indirizzo (deve rispondere subito: se dà 404 la chiamata riceve 502).',
-          cmd: `curl -X POST "${b}/${s}/wall" \\\n${key} \\\n${jsonBody({ url: 'https://esempio.it/video.mp4', userid: 'Mario Rossi', title: 'Il video di Mario' })}`,
+          cmd: `curl -X POST "${b}/api/videos" \\\n${key} \\\n${jsonBody({ url: 'https://esempio.it/video.mp4', userid: 'Mario Rossi', title: 'Il video di Mario' })}`,
         },
         {
           title: 'Video YouTube',
           note: 'Un link YouTube non si scarica: il wall lo incorpora.',
-          cmd: `curl -X POST "${b}/${s}/wall" \\\n${key} \\\n${jsonBody({ url: 'https://www.youtube.com/watch?v=LXb3EKWsInQ', userid: 'Mario Rossi' })}`,
+          cmd: `curl -X POST "${b}/api/videos" \\\n${key} \\\n${jsonBody({ url: 'https://www.youtube.com/watch?v=LXb3EKWsInQ', userid: 'Mario Rossi' })}`,
         },
       ],
     },
     {
-      group: 'Foto da stampare',
+      group: 'Foto: card in stampa e via mail',
+      main: true,
       calls: [
         {
-          title: 'Foto come file',
-          note: 'JPEG, PNG o WebP. Obbligatori userid e i 5 punteggi (0–999); copies da 1 a 10 (facoltativo). La risposta contiene l\'id della foto.',
-          cmd: `curl -X POST "${b}/${s}/print" \\\n${join(key, '  -F "foto=@scatto.jpg"', '  -F "userid=Mario Rossi"',
-            ...Object.entries(scores).map(([k, v]) => `  -F "${k}=${v}"`), '  -F "copies=1"')}`,
+          title: 'Foto da URL, stampa e mail',
+          note: 'La chiamata da usare in n8n. Il server crea la card (foto + template PSD con name e punteggi), la mette in coda di stampa e, se c\'è «to», la manda per mail nello stesso momento. Obbligatori eventID, name (nome e cognome) e i 5 punteggi (0–999); copies da 1 a 10. Per la mail: to, subject (anche con {segnaposto}), page_url (pagina EDS), gli altri {segnaposto} del modello; date è la data di oggi se manca; cc e bcc facoltativi. Risponde 201 con «print» e «mail»: ok true/false e, se qualcosa non va, il motivo (l\'altra parte va avanti lo stesso).',
+          cmd: `curl -X POST "${b}/api/photos" \\\n${key} \\\n${jsonBody({
+            url: 'https://esempio.it/scatto.jpg', ...scores, copies: 1, ...Object.fromEntries(mailFields),
+          })}`,
         },
         {
-          title: 'Foto da URL',
-          note: 'Come sopra, con la foto scaricata dal server.',
-          cmd: `curl -X POST "${b}/${s}/print" \\\n${key} \\\n${jsonBody({ url: 'https://esempio.it/scatto.jpg', userid: 'Mario Rossi', ...scores, copies: 1 })}`,
+          title: 'Foto come file, stampa e mail',
+          note: 'Come sopra, con la foto nel multipart (n8n: Body «Form-Data», «n8n Binary File», qualsiasi nome di campo). JPEG, PNG o WebP.',
+          cmd: `curl -X POST "${b}/api/photos" \\\n${join(key, field, '  -F "foto=@scatto.jpg"',
+            ...Object.entries(scores).map(([k, v]) => `  -F "${k}=${v}"`), '  -F "copies=1"', ...mailFields.map(([k, v]) => `  -F "${k}=${v}"`))}`,
+        },
+      ],
+    },
+    {
+      group: 'Stampa',
+      calls: [
+        {
+          title: 'Solo stampa',
+          note: 'Senza «to» non parte nessuna mail: la risposta ha "mail": null.',
+          cmd: `curl -X POST "${b}/api/photos" \\\n${key} \\\n${jsonBody({ url: 'https://esempio.it/scatto.jpg', name: 'Mario Rossi', ...scores, copies: 1 })}`,
         },
         {
           title: 'Stato delle stampe',
-          note: 'Pubblico, senza chiave. Per ogni foto: status (queued, printing, printed, saved, failed) e previewUrl, la card composta col PSD (utile da passare alla mail come URL).',
-          cmd: `curl "${b}/api/events/${s}/prints"`,
-        },
-        {
-          title: 'Ristampa una foto',
-          note: 'Rimette in coda la foto con quell\'id.',
-          cmd: `curl -X POST "${b}/api/events/${s}/photos/ID_FOTO/reprint" \\\n${key}`,
+          note: 'Pubblico, senza chiave. Per ogni foto: status (queued, printing, printed, saved, failed) e previewUrl, l\'anteprima del foglio stampato.',
+          cmd: `curl "${b}/api/prints?${q}"`,
         },
       ],
     },
     {
-      group: 'Email',
+      group: 'Email da sola (solo per prova)',
       calls: [
         {
           title: 'Mail con la card come file',
-          note: 'Obbligatori to, subject (l\'oggetto, anche con {segnaposto}), userid (nome e cognome), link (pagina EDS) e card. Facoltativi cc e bcc; gli altri campi riempiono gli altri {segnaposto} del modello.',
-          cmd: `curl -X POST "${b}/${s}/mail" \\\n${join(key, ...mailFields.map(([k, v]) => `  -F "${k}=${v}"`), '  -F "card=@card.jpg"')}`,
+          note: 'Per provare il modello: in n8n la mail parte con la foto (sopra). Obbligatori eventID, to, subject (l\'oggetto, anche con {segnaposto}), name (nome e cognome), page_url (pagina EDS) e scorecard_image_url (la card). date è facoltativo: senza, la data di oggi. Facoltativi cc e bcc; gli altri campi riempiono gli altri {segnaposto} del modello.',
+          cmd: `curl -X POST "${b}/api/mail" \\\n${join(key, field, ...mailFields.map(([k, v]) => `  -F "${k}=${v}"`), '  -F "scorecard_image_url=@card.jpg"')}`,
         },
         {
           title: 'Mail con la card da URL',
-          note: 'La card scaricata dal server dall\'indirizzo nel campo card (per esempio il previewUrl delle stampe, con l\'indirizzo del server davanti).',
-          cmd: `curl -X POST "${b}/${s}/mail" \\\n${key} \\\n${jsonBody({ ...Object.fromEntries(mailFields), card: `${b}/previews/${event.slug}/ID_FOTO.jpg` })}`,
+          note: 'La card scaricata dal server dall\'indirizzo nel campo scorecard_image_url.',
+          cmd: `curl -X POST "${b}/api/mail" \\\n${key} \\\n${jsonBody({ ...Object.fromEntries(mailFields), scorecard_image_url: 'https://esempio.it/card.jpg' })}`,
         },
       ],
     },
     {
       group: 'Evento',
       calls: [
-        { title: 'Accendi l\'evento', note: 'Spento non accetta video, foto né mail (409) e il wall è nero.', cmd: `curl -X PATCH "${b}/api/events/${s}" \\\n${key} \\\n${jsonBody({ active: true })}` },
-        { title: 'Spegni l\'evento', note: '', cmd: `curl -X PATCH "${b}/api/events/${s}" \\\n${key} \\\n${jsonBody({ active: false })}` },
-        { title: 'Card di esempio sul wall', note: 'true le mostra, false le toglie.', cmd: `curl -X PATCH "${b}/api/events/${s}" \\\n${key} \\\n${jsonBody({ showPlaceholder: true })}` },
-        { title: 'Stato del wall', note: 'Pubblico, senza chiave: acceso o spento e i video mostrati.', cmd: `curl "${b}/api/events/${s}/wall"` },
+        { title: 'Accendi l\'evento', note: 'Spento non accetta video, foto né mail (409) e il wall è nero.', cmd: `curl -X PATCH "${b}/api/events" \\\n${key} \\\n${jsonBody({ active: true })}` },
+        { title: 'Spegni l\'evento', note: '', cmd: `curl -X PATCH "${b}/api/events" \\\n${key} \\\n${jsonBody({ active: false })}` },
+        { title: 'Card di esempio sul wall', note: 'true le mostra, false le toglie.', cmd: `curl -X PATCH "${b}/api/events" \\\n${key} \\\n${jsonBody({ showPlaceholder: true })}` },
+        { title: 'Elenco degli eventi', note: 'Nome (eventID), stato e numero di video e foto di ognuno.', cmd: `curl "${b}/api/events" \\\n${key}` },
+        { title: 'Stato del wall', note: 'Pubblico, senza chiave: acceso o spento e i video mostrati.', cmd: `curl "${b}/api/wall?${q}"` },
         { title: 'Server raggiungibile', note: 'Pubblico: risponde {"ok":true}.', cmd: `curl "${b}/api/health"` },
       ],
     },
     {
       group: 'Pulizia',
       calls: [
-        { title: 'Elimina un video', note: 'L\'id è nella risposta dell\'invio.', cmd: `curl -X DELETE "${b}/api/events/${s}/videos/ID_VIDEO" \\\n${key}` },
-        { title: 'Elimina tutti i video', note: 'Toglie anche le card di esempio dal wall.', cmd: `curl -X DELETE "${b}/api/events/${s}/videos" \\\n${key}` },
-        { title: 'Elimina una foto', note: '', cmd: `curl -X DELETE "${b}/api/events/${s}/photos/ID_FOTO" \\\n${key}` },
-        { title: 'Elimina tutte le foto', note: '', cmd: `curl -X DELETE "${b}/api/events/${s}/photos" \\\n${key}` },
+        { title: 'Elimina un video', note: 'L\'id è nella risposta dell\'invio.', cmd: `curl -X DELETE "${b}/api/videos/ID_VIDEO?${q}" \\\n${key}` },
+        { title: 'Elimina tutti i video', note: 'Toglie anche le card di esempio dal wall.', cmd: `curl -X DELETE "${b}/api/videos?${q}" \\\n${key}` },
+        { title: 'Elimina una foto', note: '', cmd: `curl -X DELETE "${b}/api/photos/ID_FOTO?${q}" \\\n${key}` },
+        { title: 'Elimina tutte le foto', note: '', cmd: `curl -X DELETE "${b}/api/photos?${q}" \\\n${key}` },
       ],
     },
   ];
@@ -212,7 +229,7 @@ function n8nCalls(event) {
 
 function renderN8n(event) {
   const key = `${event.slug}:n8n`;
-  const groups = n8nCalls(event).map((g) => `
+  const render = (groups) => groups.map((g) => `
     <h4>${escapeHtml(g.group)}</h4>
     ${g.calls.map((c) => `
       <div class="call">
@@ -221,7 +238,21 @@ function renderN8n(event) {
         ${c.note ? `<p class="muted">${escapeHtml(c.note)}</p>` : ''}
         <pre>${escapeHtml(c.cmd)}</pre>
       </div>`).join('')}`).join('');
+  const calls = n8nCalls(event);
+  // the two calls of the n8n flow first, everything else folded away
+  const sections = `
+    <details class="calls" data-key="${escapeHtml(`${key}:main`)}" ${openDetails.has(`${key}:main`) ? 'open' : ''}>
+      <summary>Chiamate principali <span class="muted">· video sul wall, foto in stampa e via mail</span></summary>
+      ${render(calls.filter((g) => g.main))}
+    </details>
+    <details class="calls" data-key="${escapeHtml(`${key}:other`)}" ${openDetails.has(`${key}:other`) ? 'open' : ''}>
+      <summary>Altre chiamate <span class="muted">· ${escapeHtml(calls.filter((g) => !g.main).map((g) => g.group.replace(/ \(.*\)$/, '').toLowerCase()).join(', '))}</span></summary>
+      ${render(calls.filter((g) => !g.main))}
+    </details>`;
   return accordion(key, 'Chiamate da n8n', `
+    <p class="muted">Gli indirizzi sono <strong>uguali per tutti gli eventi</strong>: l'evento è il parametro <code>eventID</code> (qui <code>${escapeHtml(event.slug)}</code>),
+      come campo del corpo, in <code>?eventID=</code> o nell'header <code>x-event-id</code>. In n8n basta un'espressione o una variabile per cambiare evento.
+      I vecchi indirizzi con l'evento nel percorso (<code>/${escapeHtml(event.slug)}/wall</code>, <code>/${escapeHtml(event.slug)}/print</code>, <code>/${escapeHtml(event.slug)}/mail</code>) funzionano ancora.</p>
     <p class="muted">Chiave nell'header <code>x-api-key</code> (o <code>Authorization: Bearer</code>). Con l'evento spento le chiamate di invio ricevono <code>409</code>.
       I comandi sono per bash (Git Bash su Windows, macOS, Linux); «Copia» inserisce la chiave al posto di <code>$PHOTOBOOTH_API_KEY</code>.
       Sostituisci <code>ID_FOTO</code> / <code>ID_VIDEO</code> con l'id restituito dall'invio.</p>
@@ -229,7 +260,7 @@ function renderN8n(event) {
       <span class="muted">Indirizzo del server: <code>${escapeHtml(base)}</code>. Se n8n gira in Docker, al posto di <code>localhost</code> usa <code>host.docker.internal</code>.</span>
       <button class="small" data-action="copy-key">Copia chiave</button>
     </div>
-    ${groups}`);
+    ${sections}`);
 }
 
 const PHOTO_STATUS = {
@@ -689,12 +720,12 @@ $('#mail-account').addEventListener('click', (e) => {
 });
 
 // --- mail template of an event (HTML and images) ---------------------------------------------------
-// fields of the call that are not plain template values ({card} becomes the image)
-const MAIL_RESERVED = new Set(['to', 'cc', 'bcc', 'subject', 'params', 'card', 'cardUrl']);
+// fields of the call that are not plain template values ({scorecard_image_url} becomes the image)
+const MAIL_RESERVED = new Set(['to', 'cc', 'bcc', 'subject', 'params', 'scorecard_image_url', 'eventID']);
 const MAIL_REQUIRED_HINT = {
-  userid: '<code>{userid}</code> (nome e cognome) non compare nel modello',
-  card: '<code>{card}</code> non compare: la card arriva solo come allegato. Per mostrarla usa <code>&lt;img src="{card}"&gt;</code>',
-  link: '<code>{link}</code> non compare: il link alla pagina EDS non è nella mail. Usa <code>&lt;a href="{link}"&gt;</code>',
+  name: '<code>{name}</code> (nome e cognome) non compare nel modello',
+  scorecard_image_url: '<code>{scorecard_image_url}</code> non compare: la card viene messa in fondo al testo. Per scegliere dove usa <code>&lt;img src="{scorecard_image_url}"&gt;</code>',
+  page_url: '<code>{page_url}</code> non compare: il link alla pagina EDS non è nella mail. Usa <code>&lt;a href="{page_url}"&gt;</code>',
 };
 
 function renderMailTemplate(event) {
@@ -711,8 +742,9 @@ function renderMailTemplate(event) {
       <summary>Email <span class="muted">· nessun modello: le chiamate a /mail ricevono 409</span></summary>
       <div class="template">
         <p class="muted">Carica il file HTML della mail insieme alle immagini che usa (<code>src="logo.png"</code>, anche in sottocartelle):
-          vengono allegate alla mail. La chiamata di n8n porta <code>{userid}</code> (nome e cognome), <code>{link}</code> (la pagina EDS)
-          e la card: nel modello si mostra con <code>&lt;img src="{card}"&gt;</code> e arriva anche come allegato.
+          vengono allegate alla mail. La chiamata di n8n porta <code>{name}</code> (nome e cognome), <code>{page_url}</code> (la pagina EDS)
+          e la card <code>{scorecard_image_url}</code>: sta nel testo della mail, non allegata, dove il modello ha <code>&lt;img src="{scorecard_image_url}"&gt;</code>, altrimenti in fondo.
+          <code>{date}</code> è la data di oggi, se la chiamata non la manda.
           Altri testi <code>{nome}</code> o <code>{{nome}}</code> si riempiono con gli altri campi della chiamata.
           L'oggetto arriva con la chiamata (<code>subject</code>), anche con segnaposto.</p>
         <div class="row">${upload('Carica HTML e immagini')}</div>
@@ -744,11 +776,11 @@ function renderMailTemplate(event) {
           <form class="mail-send" data-slug="${slug}" data-edit="${slug}:mail-send" data-placeholders="${escapeHtml(JSON.stringify(values))}">
             <div class="row">
               <input name="to" type="email" required placeholder="Indirizzo a cui mandare la prova">
-              <input name="subject" required value="Prova: {userid}, ecco la tua card" title="Oggetto della prova (nella chiamata vera lo manda il servizio)">
+              <input name="subject" required value="Prova: {name}, ecco la tua card" title="Oggetto della prova (nella chiamata vera lo manda il servizio)">
               <button class="small primary" ${event.active ? '' : 'disabled'}>Invia prova</button>
             </div>
             <p class="muted">${event.active
-    ? 'Arriva la mail vera con questo oggetto, una card di esempio e un link di prova; al posto degli altri valori compaiono i nomi dei segnaposto ({userid}…). Nulla viene salvato.'
+    ? 'Arriva la mail vera con questo oggetto, una card di esempio e un link di prova; al posto degli altri valori compaiono i nomi dei segnaposto ({name}…), la data è quella di oggi. Nulla viene salvato.'
     : 'Accendi l\'evento per inviare.'}</p>
           </form>
         </div>
@@ -796,14 +828,16 @@ async function sendTestMail(form) {
   const { slug } = form.dataset;
   const to = form.elements.to.value.trim();
   const call = new FormData();
+  call.append('eventID', slug);
   call.append('to', to);
   call.append('subject', form.elements.subject.value);
-  JSON.parse(form.dataset.placeholders).forEach((name) => call.append(name, `{${name}}`));
-  call.set('userid', '{userid}');
-  call.set('link', `${base}/${slug}/wall`);
-  call.append('card', await sampleCard(), 'card-di-esempio.png');
+  // {date}: the server puts today's date, as in the real calls
+  JSON.parse(form.dataset.placeholders).filter((name) => name !== 'date').forEach((name) => call.append(name, `{${name}}`));
+  call.set('name', '{name}');
+  call.set('page_url', `${base}/${slug}/wall`);
+  call.append('scorecard_image_url', await sampleCard(), 'card-di-esempio.png');
   notify('Invio in corso…');
-  const response = await fetch(`/${slug}/mail`, { method: 'POST', body: call });
+  const response = await fetch('/api/mail', { method: 'POST', body: call });
   checkSession(response);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `Errore HTTP ${response.status}`);

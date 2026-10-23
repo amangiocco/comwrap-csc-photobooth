@@ -2,7 +2,9 @@
 // queue polled by the print agent (print/agent.js), previews of the composed print for the
 // /print/<event> page (live through the event stream: `print`, `print-removed`), admin actions.
 import path from 'node:path';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir, readFile, rm, writeFile,
+} from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
 import multer from 'multer';
@@ -10,6 +12,7 @@ import { HttpError } from './store.js';
 import { PHOTO, downloadFile } from './download.js';
 import { normalizePrintSettings } from './print-settings.js';
 import { agentTemplate } from './templates.js';
+import { eventOf, receiveUpload, uploadDir } from './event-param.js';
 
 // a photo claimed by an agent that then vanished goes back in the queue after this long
 const CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
@@ -18,11 +21,12 @@ const MAX_COPIES = 10;
 export const SCORE_FIELDS = ['total', 'technique', 'fun', 'style', 'performance'];
 const MAX_SCORE = 999;
 
-/** userid and the five scores from the request; 400 listing what is missing or wrong. */
+/** name (first and last name) and the five scores; 400 listing what is missing or wrong. */
 function readPrintFields(body = {}) {
   const problems = [];
-  const userId = String(body.userid ?? body.userId ?? '').trim().slice(0, 100);
-  if (!userId) problems.push('userid');
+  // «name», as in the mail; «userid» is what the first calls sent
+  const userId = String(body.name ?? body.userid ?? body.userId ?? '').trim().slice(0, 100);
+  if (!userId) problems.push('name');
   const scores = {};
   SCORE_FIELDS.forEach((field) => {
     const raw = body[field];
@@ -34,7 +38,7 @@ function readPrintFields(body = {}) {
     }
   });
   if (problems.length) {
-    throw new HttpError(400, `Campi mancanti o non validi: ${problems.join(', ')} (userid testo, punteggi numeri da 0 a ${MAX_SCORE}).`);
+    throw new HttpError(400, `Campi mancanti o non validi: ${problems.join(', ')} (name testo, punteggi numeri da 0 a ${MAX_SCORE}).`);
   }
   return { userId, scores };
 }
@@ -47,6 +51,8 @@ const previewUrl = (photo, slug) => (photo.previewFile
 export const publicPhoto = (photo, slug) => ({
   ...photo,
   fileUrl: `/api/print/photos/${photo.id}/file`,
+  // the card made by the server (cards.js): what is printed and mailed
+  cardUrl: photo.cardFile ? `/api/print/photos/${photo.id}/card` : null,
   previewUrl: previewUrl(photo, slug),
 });
 
@@ -97,15 +103,16 @@ const isWaiting = (photo, now = Date.now()) => photo.status === 'queued'
 
 const newName = (ext) => `${Date.now()}-${randomUUID().slice(0, 8)}${ext}`;
 
+/** `cards`: makes the card (cards.js); `mail`: { sendCardMail } of mail.js. */
 export function photoRoutes(app, {
-  store, requireKey, maxBytes, hub, logger,
+  store, requireKey, maxBytes, hub, logger, cards, mail,
 }) {
   const announce = (slug, photo) => hub.send(slug, 'print', publicPrint(photo, slug));
 
   const upload = multer({
     storage: multer.diskStorage({
       destination: async (req, file, cb) => {
-        const dir = store.photosDir(req.params.slug);
+        const dir = uploadDir(req, store.photosDir, store.incomingDir);
         await mkdir(dir, { recursive: true });
         cb(null, dir);
       },
@@ -135,17 +142,15 @@ export function photoRoutes(app, {
 
   // --- upload from n8n: multipart file (any field name) or JSON { url, ... }, with userid and the
   // five scores (required), title and copies (optional) ------------------------------------
-  // POST /<event>/print, or the older /api/events/<event>/photos
-  app.post(['/:slug/print', '/api/events/:slug/photos'], requireKey, async (req, res, next) => {
-    const event = await store.get(req.params.slug);
-    if (!event.active) throw new HttpError(409, `L'evento «${event.slug}» è spento: accendilo per ricevere foto.`);
-    if (req.is('multipart/form-data')) {
-      upload.any()(req, res, (error) => (error ? next(error) : next()));
-      return;
-    }
-    express.json()(req, res, next);
-  }, async (req, res) => {
-    const { slug } = req.params;
+  // POST /api/photos with the event as a parameter, or the older /<event>/print and
+  // /api/events/<event>/photos. The server makes the card (photo + template + name and scores),
+  // then at the same time queues it for printing and, if the call has «to», sends it by mail
+  // (fields of the mail: see mail.js). 201 when the photo is taken, with how print and mail went:
+  // { ...photo, print: { ok, status | error }, mail: null | { ok, ... } | { ok: false, status, error } }
+  app.post(['/api/photos', '/:slug/print', '/api/events/:slug/photos'], requireKey, ...receiveUpload({
+    store, upload, dirFor: store.photosDir, refused: 'accendilo per ricevere foto',
+  }), async (req, res) => {
+    const { slug } = req;
     let fields;
     try {
       fields = readPrintFields(req.body);
@@ -168,14 +173,67 @@ export function photoRoutes(app, {
     } else {
       throw new HttpError(400, 'Invia la foto come file (multipart/form-data) oppure JSON {"url": "..."}.');
     }
-    const entry = await store.addPhoto(slug, {
+    const dir = store.photosDir(slug);
+    const event = await store.get(slug);
+    const original = await readFile(path.join(dir, photo.file));
+    let card;
+    try {
+      card = await cards.make(event, original, fields);
+    } catch (error) {
+      await rm(path.join(dir, photo.file), { force: true });
+      throw new HttpError(500, `Card non creata: ${error.message}`);
+    }
+    if (card) {
+      photo.cardFile = `${path.parse(photo.file).name}.card.jpg`;
+      await writeFile(path.join(dir, photo.cardFile), card);
+    }
+
+    // print and mail at the same time; one failing does not stop the other
+    const queue = store.addPhoto(slug, {
       ...photo,
       ...fields,
       title: req.body?.title ? String(req.body.title).slice(0, 200) : '',
       copies: Math.min(MAX_COPIES, Math.max(1, Math.trunc(Number(req.body?.copies) || 1))),
     });
-    logger?.info('attivita', `Foto in coda di stampa (${entry.copies} ${entry.copies === 1 ? 'copia' : 'copie'}, id ${entry.id})`, { event: slug });
-    res.status(201).json(publicPhoto(entry, slug));
+    const wantsMail = Boolean(String(req.body?.to ?? '').trim());
+    const sending = wantsMail
+      ? mail.sendCardMail(event, { ...req.body, name: fields.userId }, async () => (card
+        ? { content: card, ext: '.jpg', contentType: 'image/jpeg' }
+        : { content: original, ext: path.extname(photo.file), contentType: photo.mime }))
+      : null;
+    const [queued, sent] = await Promise.allSettled([queue, sending]);
+
+    let print;
+    let entry = null;
+    if (queued.status === 'fulfilled') {
+      entry = queued.value;
+      print = { ok: true, status: entry.status, copies: entry.copies };
+      logger?.info('attivita', `Foto in coda di stampa (${entry.copies} ${entry.copies === 1 ? 'copia' : 'copie'}, id ${entry.id})`, { event: slug });
+    } else {
+      print = { ok: false, error: queued.reason?.message || 'Coda di stampa non disponibile.' };
+      logger?.error('stampa', `Foto non messa in coda: ${print.error}`, { event: slug });
+    }
+    let mailResult = null;
+    if (wantsMail) {
+      if (sent.status === 'fulfilled') {
+        mailResult = sent.value;
+      } else {
+        const error = sent.reason || {};
+        mailResult = { ok: false, status: error.status || 500, error: error.message || 'Invio non riuscito.' };
+        // the SMTP answer may name the recipient: only how it went goes in the log
+        logger?.warn('attivita', `Email non inviata (${error.quiet ? 'errore del server di posta' : mailResult.error})`, { event: slug });
+      }
+    }
+    // not in the queue: the files are not kept; with no mail either, nothing was done
+    if (!entry) {
+      await Promise.all([photo.file, photo.cardFile].filter(Boolean).map((f) => rm(path.join(dir, f), { force: true })));
+      if (!mailResult?.ok) throw new HttpError(500, `Né stampa né mail: ${print.error}${mailResult ? `; mail: ${mailResult.error}` : ''}`);
+    }
+    res.status(201).json({
+      ...(entry ? publicPhoto(entry, slug) : { id: null }),
+      print,
+      mail: mailResult,
+    });
   });
 
   // --- print agent ---------------------------------------------------------------------
@@ -237,6 +295,12 @@ export function photoRoutes(app, {
     res.sendFile(path.join(store.photosDir(event.slug), photo.file));
   });
 
+  app.get('/api/print/photos/:id/card', requireKey, async (req, res) => {
+    const { event, photo } = await store.findPhoto(req.params.id);
+    if (!photo.cardFile) throw new HttpError(404, 'Questa foto non ha una card fatta dal server.');
+    res.sendFile(path.join(store.photosDir(event.slug), photo.cardFile));
+  });
+
   app.post('/api/print/photos/:id/result', requireKey, express.json(), async (req, res) => {
     agentSeen(req);
     const ok = req.body?.ok === true;
@@ -259,27 +323,30 @@ export function photoRoutes(app, {
   });
 
   // --- admin -------------------------------------------------------------------------------
-  app.post('/api/events/:slug/photos/:id/reprint', requireKey, async (req, res) => {
+  // the photo id is enough: the event is not needed
+  app.post(['/api/events/:slug/photos/:id/reprint', '/api/photos/:id/reprint'], requireKey, async (req, res) => {
     const { event, photo } = await store.updatePhoto(req.params.id, { status: 'queued', error: null, claimedAt: null });
     announce(event.slug, photo);
     res.json(publicPhoto(photo, event.slug));
   });
 
-  app.delete('/api/events/:slug/photos', requireKey, async (req, res) => {
-    const removed = await store.clearPhotos(req.params.slug);
-    removed.forEach((photo) => hub.send(req.params.slug, 'print-removed', { id: photo.id }));
+  app.delete(['/api/events/:slug/photos', '/api/photos'], requireKey, express.json(), async (req, res) => {
+    const slug = eventOf(req, res);
+    const removed = await store.clearPhotos(slug);
+    removed.forEach((photo) => hub.send(slug, 'print-removed', { id: photo.id }));
     res.json({ removed: removed.length });
   });
 
-  app.delete('/api/events/:slug/photos/:id', requireKey, async (req, res) => {
-    await store.removePhoto(req.params.slug, req.params.id);
-    hub.send(req.params.slug, 'print-removed', { id: req.params.id });
+  app.delete(['/api/events/:slug/photos/:id', '/api/photos/:id'], requireKey, express.json(), async (req, res) => {
+    const slug = eventOf(req, res);
+    await store.removePhoto(slug, req.params.id);
+    hub.send(slug, 'print-removed', { id: req.params.id });
     res.status(204).end();
   });
 
   // --- print page (public, read-only like the wall) ------------------------------------
-  app.get('/api/events/:slug/prints', async (req, res) => {
-    const event = await store.get(req.params.slug);
+  app.get(['/api/events/:slug/prints', '/api/prints'], async (req, res) => {
+    const event = await store.get(eventOf(req, res));
     res.json({
       slug: event.slug,
       name: event.name,

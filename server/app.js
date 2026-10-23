@@ -1,7 +1,7 @@
 // HTTP server: admin API (events on/off), uploads from n8n (videos for the wall, photos to
 // print), video wall with live updates, print queue for the print agent (see print/).
 import path from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -16,6 +16,8 @@ import { mailRoutes, publicMailTemplate } from './mail.js';
 import { createLogger, logRoutes, requestLogger } from './logs.js';
 import { createAuth } from './auth.js';
 import { requireHttps } from './https.js';
+import { eventOf, receiveUpload, uploadDir } from './event-param.js';
+import { createCards } from './cards.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -126,14 +128,15 @@ export function parsePlaceholder(value) {
 
 /**
  * options: { dataDir, apiKey, adminUser, adminPasswordHash, maxUploadMb, placeholder, publicUrl,
- *   showcaseSeconds, logRetentionDays, logger, trustProxy, https }
+ *   showcaseSeconds, logRetentionDays, logger, trustProxy, https, printTemplate, photoLayers }
  * `trustProxy`: Express «trust proxy» (HTTPS done by a proxy in front). `https`: { port } when the
  * console is reachable on HTTPS, so it is required there (see https.js).
+ * `printTemplate`: the local PSD (or folder) for the cards of events with no template uploaded.
  * Returns { app, store, hub, logger }.
  */
 export function createApp({
   dataDir, apiKey, adminUser = 'admin', adminPasswordHash, maxUploadMb = 500, placeholder = '', publicUrl = '', showcaseSeconds = 8,
-  trustProxy, https = null,
+  trustProxy, https = null, printTemplate = null, photoLayers,
   logRetentionDays = 2, logger = createLogger({ dir: path.join(dataDir, 'logs'), retentionDays: logRetentionDays }),
 }) {
   const wallPlaceholder = parsePlaceholder(placeholder);
@@ -156,7 +159,7 @@ export function createApp({
   const upload = multer({
     storage: multer.diskStorage({
       destination: async (req, file, cb) => {
-        const dir = store.mediaDir(req.params.slug);
+        const dir = uploadDir(req, store.mediaDir, store.incomingDir);
         await mkdir(dir, { recursive: true });
         cb(null, dir);
       },
@@ -187,50 +190,52 @@ export function createApp({
     res.status(201).json(publicEvent(event, hub, wallPlaceholder));
   });
 
-  app.patch('/api/events/:slug', requireKey, express.json(), async (req, res) => {
+  // the event in the path, or as a parameter: PATCH /api/events {"eventID": "...", "active": true}
+  app.patch(['/api/events/:slug', '/api/events'], requireKey, express.json(), async (req, res) => {
+    const slug = eventOf(req, res);
     // the print and mail templates change only through their own routes
-    const { template, mailTemplate, ...changes } = req.body || {};
+    const {
+      template, mailTemplate, eventID, ...changes
+    } = req.body || {};
     if (changes.printSettings !== undefined) changes.printSettings = normalizePrintSettings(changes.printSettings, { strict: true });
-    const event = await store.update(req.params.slug, changes);
+    const event = await store.update(slug, changes);
     hub.send(event.slug, 'status', { active: event.active, name: event.name });
     // the wall reloads what it shows (e.g. the sample cards switched on or off)
     if (typeof changes.showPlaceholder === 'boolean') hub.send(event.slug, 'settings', {});
     res.json(publicEvent(event, hub, wallPlaceholder));
   });
 
-  app.delete('/api/events/:slug', requireKey, async (req, res) => {
-    hub.send(req.params.slug, 'status', { active: false, deleted: true });
-    await store.remove(req.params.slug);
+  app.delete(['/api/events/:slug', '/api/events'], requireKey, express.json(), async (req, res) => {
+    const slug = eventOf(req, res);
+    hub.send(slug, 'status', { active: false, deleted: true });
+    await store.remove(slug);
     res.status(204).end();
   });
 
-  app.delete('/api/events/:slug/videos', requireKey, async (req, res) => {
-    const removed = await store.clearVideos(req.params.slug);
+  app.delete(['/api/events/:slug/videos', '/api/videos'], requireKey, express.json(), async (req, res) => {
+    const slug = eventOf(req, res);
+    const removed = await store.clearVideos(slug);
     // «delete all» empties the wall: the sample cards go too (they can be switched on again)
-    await store.update(req.params.slug, { showPlaceholder: false });
-    removed.forEach((video) => hub.send(req.params.slug, 'removed', { id: video.id }));
-    hub.send(req.params.slug, 'settings', {});
+    await store.update(slug, { showPlaceholder: false });
+    removed.forEach((video) => hub.send(slug, 'removed', { id: video.id }));
+    hub.send(slug, 'settings', {});
     res.json({ removed: removed.length });
   });
 
-  app.delete('/api/events/:slug/videos/:id', requireKey, async (req, res) => {
-    const video = await store.removeVideo(req.params.slug, req.params.id);
-    hub.send(req.params.slug, 'removed', { id: video.id });
+  app.delete(['/api/events/:slug/videos/:id', '/api/videos/:id'], requireKey, express.json(), async (req, res) => {
+    const slug = eventOf(req, res);
+    const video = await store.removeVideo(slug, req.params.id);
+    hub.send(slug, 'removed', { id: video.id });
     res.status(204).end();
   });
 
   // --- upload from n8n: multipart file (any field name) or JSON { url, title } ---------
-  // POST /<event>/wall, or the older /api/events/<event>/videos
-  app.post(['/:slug/wall', '/api/events/:slug/videos'], requireKey, async (req, res, next) => {
-    const event = await store.get(req.params.slug);
-    if (!event.active) throw new HttpError(409, `L'evento «${event.slug}» è spento: accendilo per ricevere video.`);
-    if (req.is('multipart/form-data')) {
-      upload.any()(req, res, (error) => (error ? next(error) : next()));
-      return;
-    }
-    express.json()(req, res, next);
-  }, async (req, res) => {
-    const { slug } = req.params;
+  // POST /api/videos with the event as a parameter, or the older /<event>/wall and
+  // /api/events/<event>/videos
+  app.post(['/api/videos', '/:slug/wall', '/api/events/:slug/videos'], requireKey, ...receiveUpload({
+    store, upload, dirFor: store.mediaDir, refused: 'accendilo per ricevere video',
+  }), async (req, res) => {
+    const { slug } = req;
     let video;
     if (req.files) {
       const [file] = req.files;
@@ -262,8 +267,8 @@ export function createApp({
   });
 
   // --- wall (public, read-only) -------------------------------------------------------
-  app.get('/api/events/:slug/wall', async (req, res) => {
-    const event = await store.get(req.params.slug);
+  app.get(['/api/events/:slug/wall', '/api/wall'], async (req, res) => {
+    const event = await store.get(eventOf(req, res));
     res.json({
       slug: event.slug,
       name: event.name,
@@ -297,25 +302,36 @@ export function createApp({
     });
   });
 
+  const mail = mailRoutes(app, {
+    store, requireKey, requireAdmin, dataDir, logger,
+  });
   photoRoutes(app, {
-    store, requireKey, maxBytes, hub, logger,
+    store, requireKey, maxBytes, hub, logger, mail,
+    cards: createCards({
+      store, localTemplate: printTemplate, photoLayers, log: (msg) => logger.info('stampa', msg),
+    }),
   });
   templateRoutes(app, {
     store, requireKey, requireAdmin, maxBytes,
   });
-  mailRoutes(app, {
-    store, requireKey, requireAdmin, dataDir, logger,
-  });
   logRoutes(app, { logger, requireAdmin });
 
   app.use('/media', express.static(store.mediaRoot, { fallthrough: false, maxAge: '1h' }));
-  app.get('/:slug/wall', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'wall.html')));
-  app.get('/:slug/print', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'print.html')));
+  // the pages ask for /static/x.js?v=<start of the server>: after a restart the browser never keeps
+  // an old copy of the scripts
+  const version = Date.now().toString(36);
+  const page = (name) => async (req, res) => {
+    const html = await readFile(path.join(PUBLIC_DIR, name), 'utf8');
+    res.set('Cache-Control', 'no-cache').type('html')
+      .send(html.replace(/(\/static\/[\w.-]+\.(?:js|css))(?=["'])/g, `$1?v=${version}`));
+  };
+  app.get('/:slug/wall', page('wall.html'));
+  app.get('/:slug/print', page('print.html'));
   // the first addresses: /wall/<event> and /print/<event>
   app.get('/wall/:slug', (req, res) => res.redirect(301, `/${encodeURIComponent(req.params.slug)}/wall`));
   app.get('/print/:slug', (req, res) => res.redirect(301, `/${encodeURIComponent(req.params.slug)}/print`));
   app.get('/', (req, res) => res.redirect('/admin'));
-  app.get('/admin', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
+  app.get('/admin', page('admin.html'));
   app.use('/static', express.static(PUBLIC_DIR));
 
   app.use((req, res, next) => next(new HttpError(404, `Risorsa non trovata: ${req.path}`)));

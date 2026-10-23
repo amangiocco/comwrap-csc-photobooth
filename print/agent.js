@@ -1,5 +1,6 @@
-// Print agent: runs on the PC with the printer. It polls the server's print queue, merges each photo
-// into the PSD template, saves the result in PRINT_OUTPUT_DIR and sends it to PRINTER_NAME.
+// Print agent: runs on the PC with the printer. It polls the server's print queue, takes the card
+// the server made for each photo (or, for photos without one, merges the photo into the PSD
+// template itself), lays it out on the paper and sends it to PRINTER_NAME.
 // The PC only makes outgoing calls, so it works with the server anywhere (LAN, AWS...).
 // The printer is any printer installed in Windows, USB ones included (PRINTER_NAME).
 //   npm run print              start the agent
@@ -7,7 +8,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import {
-  mkdir, mkdtemp, readdir, rm, stat, writeFile,
+  mkdir, mkdtemp, readdir, rm, writeFile,
 } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -15,9 +16,13 @@ import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
-import { compose, loadTemplate } from './compose.js';
+import {
+  compose, findTemplate, loadTemplate, printValues,
+} from './compose.js';
 import { layoutSheet } from './layout.js';
 import { DEFAULT_PRINT_SETTINGS } from '../server/print-settings.js';
+
+export { printValues };
 
 // longest side of the preview sent to the server for the print page
 const PREVIEW_SIZE = 1200;
@@ -48,21 +53,6 @@ async function windowsPrint(pdfFile, {
   });
 }
 
-/** The template file: `templatePath` itself, or the newest .psd if it is a folder; null if none. */
-async function findTemplate(templatePath) {
-  let info;
-  try {
-    info = await stat(templatePath);
-  } catch {
-    return null;
-  }
-  if (!info.isDirectory()) return { file: templatePath, info };
-  const found = await Promise.all((await readdir(templatePath))
-    .filter((name) => name.toLowerCase().endsWith('.psd'))
-    .map(async (name) => ({ file: path.join(templatePath, name), info: await stat(path.join(templatePath, name)) })));
-  return found.sort((a, b) => b.info.mtimeMs - a.info.mtimeMs)[0] || null;
-}
-
 /** Windows printers with their port, to tell the USB ones apart. */
 async function printerPorts() {
   try {
@@ -72,18 +62,6 @@ async function printerPorts() {
   } catch {
     return new Map();
   }
-}
-
-/**
- * Texts for the template placeholders: {name} is the userid as sent (capitals included), the
- * scores have at least two digits (as «01»).
- */
-export function printValues(item) {
-  const values = { name: String(item.userId || '') };
-  Object.entries(item.scores || {}).forEach(([key, value]) => {
-    values[key.toLowerCase()] = String(value).padStart(2, '0');
-  });
-  return values;
 }
 
 const safe = (text) => String(text || '').normalize('NFD').replace(/[^\w-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
@@ -180,9 +158,15 @@ export function createAgent({
     }
     const label = `${item.eventName} · ${item.userId || item.id.slice(0, 8)}`;
     try {
-      const photo = Buffer.from(await (await api('GET', item.fileUrl)).arrayBuffer());
-      const tpl = item.template ? await eventTemplate(item) : await currentTemplate();
-      const picture = tpl ? await compose(photo, tpl, printValues(item)) : await sharp(photo).rotate().jpeg({ quality: 95 }).toBuffer();
+      let picture;
+      if (item.cardUrl) {
+        // the card made by the server when the photo arrived: the same one sent by mail
+        picture = Buffer.from(await (await api('GET', item.cardUrl)).arrayBuffer());
+      } else {
+        const photo = Buffer.from(await (await api('GET', item.fileUrl)).arrayBuffer());
+        const tpl = item.template ? await eventTemplate(item) : await currentTemplate();
+        picture = tpl ? await compose(photo, tpl, printValues(item)) : await sharp(photo).rotate().jpeg({ quality: 95 }).toBuffer();
+      }
       // on the paper in use: size, orientation, margins, border (settings of the event)
       const settings = item.printSettings || DEFAULT_PRINT_SETTINGS;
       const sheet = await layoutSheet(picture, settings);

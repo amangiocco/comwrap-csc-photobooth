@@ -15,7 +15,7 @@
 // the PSD (see fonts.js). In composite mode the placeholder layers must be hidden in the PSD,
 // otherwise their sample text («NAME», «01») is already in the composite.
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import sharp from 'sharp';
 import { initializeCanvas, readPsd } from 'ag-psd';
 import { createCanvas } from '@napi-rs/canvas';
@@ -31,6 +31,33 @@ initializeCanvas(
 );
 
 const toBuffer = (pixels) => Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength);
+
+/** The template file: `templatePath` itself, or the newest .psd if it is a folder; null if none. */
+export async function findTemplate(templatePath) {
+  let info;
+  try {
+    info = await stat(templatePath);
+  } catch {
+    return null;
+  }
+  if (!info.isDirectory()) return { file: templatePath, info };
+  const found = await Promise.all((await readdir(templatePath))
+    .filter((name) => name.toLowerCase().endsWith('.psd'))
+    .map(async (name) => ({ file: path.join(templatePath, name), info: await stat(path.join(templatePath, name)) })));
+  return found.sort((a, b) => b.info.mtimeMs - a.info.mtimeMs)[0] || null;
+}
+
+/**
+ * Texts for the template placeholders: {name} is the name as sent (capitals included), the
+ * scores have at least two digits (as «01»).
+ */
+export function printValues(item) {
+  const values = { name: String(item.userId || '') };
+  Object.entries(item.scores || {}).forEach(([key, value]) => {
+    values[key.toLowerCase()] = String(value).padStart(2, '0');
+  });
+  return values;
+}
 
 function bounds(layer) {
   if (layer.right > layer.left && layer.bottom > layer.top) {
@@ -140,7 +167,7 @@ export async function loadTemplate(file, { photoLayers = PHOTO_LAYERS, fontsDir 
     });
   }
   const fonts = await loadFonts(fontsDir || path.join(path.dirname(file), 'fonts'));
-  const texts = flat.filter(isPlaceholder).map((f) => textSpec(f, fonts, canvas, warnings));
+  const texts = flat.filter(isPlaceholder).map((f) => textSpec(f, fonts, canvas));
   const missing = new Map();
   texts.filter((t) => !t.fontFound).forEach((t) => missing.set(t.fontName, [...(missing.get(t.fontName) || []), t.layerName]));
   missing.forEach((layers, font) => {
@@ -239,7 +266,7 @@ function ink(canvas, draw) {
  * What is needed to draw a placeholder. Its sample text is drawn once and compared with the pixels
  * Photoshop saved for the layer: the difference (size and position) is corrected for every value.
  */
-function textSpec(f, fonts, canvas, warnings) {
+function textSpec(f, fonts, canvas) {
   const t = f.layer.text;
   const style = t.style || {};
   const fontName = style.font?.name || '';

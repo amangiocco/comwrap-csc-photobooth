@@ -120,6 +120,9 @@ const {
 } = createApp({
   dataDir, apiKey: key, adminUser, adminPasswordHash: admin.hash, maxUploadMb, placeholder, publicUrl, showcaseSeconds, logRetentionDays,
   trustProxy, https: httpsInfo,
+  // the cards of events with no template uploaded: the same local PSD the print service uses
+  printTemplate: path.resolve(ROOT, process.env.PRINT_TEMPLATE || 'templates'),
+  photoLayers: process.env.PRINT_PHOTO_LAYER ? process.env.PRINT_PHOTO_LAYER.split(',') : undefined,
 });
 
 // what the server and the print service write on the console goes in the log too (tab Log of
