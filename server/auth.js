@@ -85,6 +85,10 @@ export function createAuth({
 
   const requireKey = (req, res, next) => {
     const header = req.get('x-api-key') || (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+
+    console.log("KEY FROM HEADER:", header);
+    console.log("API KEY FROM ENV:", apiKey);
+
     if (header) {
       if (!sameSecret(header, apiKey)) return next(new HttpError(401, 'Chiave API mancante o non valida.'));
       return next();
